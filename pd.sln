@@ -1,0 +1,32 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 10.00
+# Visual Studio 2008
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "pd", "pd\pd.vcproj", "{49B0E81A-D38E-426E-AB76-CC8463EC0003}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Win32 = Debug|Win32
+		Debug|x64 = Debug|x64
+		Release|Win32 = Release|Win32
+		Release|x64 = Release|x64
+		x64|Win32 = x64|Win32
+		x64|x64 = x64|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.Debug|Win32.ActiveCfg = Debug|Win32
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.Debug|Win32.Build.0 = Debug|Win32
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.Debug|x64.ActiveCfg = Debug|x64
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.Debug|x64.Build.0 = Debug|x64
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.Release|Win32.ActiveCfg = Release|Win32
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.Release|Win32.Build.0 = Release|Win32
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.Release|x64.ActiveCfg = Release|x64
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.Release|x64.Build.0 = Release|x64
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.x64|Win32.ActiveCfg = Debug|Win32
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.x64|Win32.Build.0 = Debug|Win32
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.x64|x64.ActiveCfg = x64|x64
+		{49B0E81A-D38E-426E-AB76-CC8463EC0003}.x64|x64.Build.0 = x64|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
