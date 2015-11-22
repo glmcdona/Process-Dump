@@ -10,21 +10,21 @@ I'm maintaining an official compiled release on my website here:
 Dump all modules from all processes (ignoring known clean modules):
    -   pd64.exe -system
 
- Dump all modules from a specific process identifier:
+Dump all modules from a specific process identifier:
    -   pd64.exe -pid 0x18A
 
- Dump all modules by process name:
+Dump all modules by process name:
    -   pd64.exe -p .*chrome.*
 
- Build clean-hash database. These hashes will be used to exclude modules from dumping with the above commands:
+Build clean-hash database. These hashes will be used to exclude modules from dumping with the above commands:
    -   pd64.exe -db gen
 
- Dump code from a specific address in PID 0x1a3:
+Dump code from a specific address in PID 0x1a3:
    -   pd64.exe -pid 0x1a3 -a 0xffb4000
-        Generates two files (32 and 64 bit) that can be loaded for analysis in IDA with generated PE headers and
-        generated import table:
-                notepad_exe_x64_hidden_FFB40000.exe
-                notepad_exe_x86_hidden_FFB40000.exe
+  Generates two files (32 and 64 bit) that can be loaded for analysis in IDA with generated PE headers and
+  generated import table:
+        notepad_exe_x64_hidden_FFB40000.exe
+        notepad_exe_x86_hidden_FFB40000.exe
 
 
 # Help Page
