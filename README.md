@@ -1,30 +1,64 @@
 # Process Dump
-Windows reverse-engineering command-line tool to dump malware memory components back to disk for analysis. This is a common task for malware researchers who need to dump unpacked or injected code back to disk for analysis with static analysis tools such as IDA.
+Process Dump is a Windows reverse-engineering command-line tool to dump malware memory components back to disk for analysis. Often malware files are packed and obfuscated before they are executed in order to avoid AV scanners, however when these files are executed they will often unpack or inject a clean version of the malware code in memory. A common task for malware researchers when analyzing malware is to dump this unpacked code back from memory to disk for scanning with AV products or for analysis with static analysis tools such as IDA.
 
-Process Dump works for 32 and 64 operating systems, uses an aggressive import reconstruction approach, and allows for dumping of regions without PE headers - in these cases PE headers and import tables will automatically be generated. Process Dump supports creation and use of a clean-hash database, so that dumping of clean files such as kernel32.dll can be skipped.
+Process Dump works for Windows 32 and 64 bit operating systems and can dump memory components from specific processes or from all processes currently running. Process Dump supports creation and use of a clean-hash database, so that dumping of all the clean files such as kernel32.dll can be skipped. It's main features include:
+* Dumps code from a specific process or all processes
+* Finds and dumps hidden modules that are not properly loaded in processes
+* Finds and dumps loose code chunks even if they aren't associated with a PE file. It builds a PE header and import table for the chunks.
+* Reconstructs imports using an aggressive approach.
+* Can run in close dump monitor mode ('-closemon'), where processes will be paused and dumped just before they terminate.
+* Multi-threaded, so when you are dumping all running processes it will go pretty quickly.
+* Can generate a clean hash database. Generate this before a machine is infected with malware so Process Dump will only dump the new malicious malware components.
 
 I'm maintaining an official compiled release on my website here:
   http://split-code.com/processdump.html
 
 # Example Usage
-Dump all modules from all processes (ignoring known clean modules):
-   -   pd64.exe -system
+Dump all modules and hidden code chunks from all processes on your system (ignoring known clean modules):
+* pd64.exe -system
 
-Dump all modules from a specific process identifier:
-   -   pd64.exe -pid 0x18A
+Run in terminate monitor mode. Until cancelled (CTRL-C), Process Dump will dump any process just before the termination:
+* pd64.exe -closemon
 
-Dump all modules by process name:
-   -   pd64.exe -p .*chrome.*
+Dump all modules and hidden code chunks from a specific process identifier:
+* pd64.exe -pid 0x18A
+
+Dump all modules and hidden code chunk by process name:
+* pd64.exe -p .*chrome.*
 
 Build clean-hash database. These hashes will be used to exclude modules from dumping with the above commands:
-   -   pd64.exe -db gen
+* pd64.exe -db gen
 
 Dump code from a specific address in PID 0x1a3:
-   -   pd64.exe -pid 0x1a3 -a 0xffb4000
-  Generates two files (32 and 64 bit) that can be loaded for analysis in IDA with generated PE headers and
-  generated import table:
-        notepad_exe_x64_hidden_FFB40000.exe
-        notepad_exe_x86_hidden_FFB40000.exe
+* pd64.exe -pid 0x1a3 -a 0xffb4000
+ * Generates two files (32 and 64 bit) that can be loaded for analysis in IDA with generated PE headers and generated import table:
+  * notepad_exe_x64_hidden_FFB40000.exe
+  * notepad_exe_x86_hidden_FFB40000.exe
+
+
+# Example sandbox usage
+If you are running an automated sandbox or manual anti-malware research environment, I recommend running the following process with Process Dump, run all commands as Administrator:
+1. On your clean environement build the clean hash database.
+ * pd64.exe -db gen
+ * (or more quickly) pd64 -db genquick
+2. Begin the Process Dump terminate monitor. This will dump all the intermediate processes used by the malware:
+ * pd64.exe -closemon
+3. Run the malware file
+4. Watch the malware install (and pd64 dumping any process that tries to close)
+5. When you are ready to dump the running malware from memory, run the following command to dump all processes:
+ * pd64.exe -system
+6. All the dumped components will be in the working directory of pd64.exe. You can change the output path using the '-o' flag,
+
+
+Notes on the naming convention of dumped modules:
+* 'hiddemodule' in the filename instead of the module name indicates the module was not properly registered in the process.
+* 'codechunk' in the filename means that it is a reconstructed dump from a loose executable region. This can be for example injected code that did not have a PE header. Codechunks will be dumped twice, once with a reconstructed x86 and again with a reconstructed x64 header.
+
+Example filenames of dumped files
+* notepad_exe_PID2990_hiddenmodule_16B8ABB0000_x86.dll
+* notepad_exe_PID3b5c_notepad.exe_7FF6E6630000_x64.exe
+* notepad_exe_PID2c54_codechunk_17BD0000_x86.dll
+* notepad_exe_PID2c54_codechunk_17BD0000_x64.dll
 
 
 # Help Page
