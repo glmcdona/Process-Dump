@@ -95,14 +95,14 @@ BOOL WINAPI ConsoleHandler(DWORD CEvent)
 	case CTRL_C_EVENT:
 	case CTRL_BREAK_EVENT:
 		// Cancel the event and set closing flag
-		printf("Close request recieved.\r\n");
+		printf("Close request received.\r\n");
 		ConsoleRequestingClose = true;
 		break;
 	case CTRL_CLOSE_EVENT:
 	case CTRL_LOGOFF_EVENT:
 	case CTRL_SHUTDOWN_EVENT:
 		// We need to cleanup before terminating since we can't cancel this event
-		printf("Terminate request recieved.\r\n");
+		printf("Terminate request received.\r\n");
 		ConsoleRequestingClose = true;
 		Sleep(30000); // hackjob to make sure it cleans up
 		break;
