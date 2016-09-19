@@ -20,6 +20,9 @@ You can download the latest compiled release of Process Dump here:
 This tool requires Microsoft Visual C++ Redistributable for Visual Studio 2015 to be installed to work:
 * https://www.microsoft.com/en-ca/download/details.aspx?id=48145
 
+# Compiling source code
+This is designed for Visual Studio 2015 and works with the free Community edition. Just open the project file with VS2015 and compile, it should be that easy!
+
 
 # Example Usage
 Dump all modules and hidden code chunks from all processes on your system (ignoring known clean modules):
