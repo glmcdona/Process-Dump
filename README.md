@@ -2,8 +2,8 @@
 Process Dump is a Windows reverse-engineering command-line tool to dump malware memory components back to disk for analysis. Often malware files are packed and obfuscated before they are executed in order to avoid AV scanners, however when these files are executed they will often unpack or inject a clean version of the malware code in memory. A common task for malware researchers when analyzing malware is to dump this unpacked code back from memory to disk for scanning with AV products or for analysis with static analysis tools such as IDA.
 
 Process Dump works for Windows 32 and 64 bit operating systems and can dump memory components from specific processes or from all processes currently running. Process Dump supports creation and use of a clean-hash database, so that dumping of all the clean files such as kernel32.dll can be skipped. It's main features include:
-* Dumps code from a specific process or all processes
-* Finds and dumps hidden modules that are not properly loaded in processes
+* Dumps code from a specific process or all processes.
+* Finds and dumps hidden modules that are not properly loaded in processes.
 * Finds and dumps loose code chunks even if they aren't associated with a PE file. It builds a PE header and import table for the chunks.
 * Reconstructs imports using an aggressive approach.
 * Can run in close dump monitor mode ('-closemon'), where processes will be paused and dumped just before they terminate.
@@ -24,7 +24,7 @@ Dump all modules and hidden code chunks from a specific process identifier:
 * pd64.exe -pid 0x18A
 
 Dump all modules and hidden code chunk by process name:
-* pd64.exe -p .*chrome.*
+* pd64.exe -p .\*chrome.\*
 
 Build clean-hash database. These hashes will be used to exclude modules from dumping with the above commands:
 * pd64.exe -db gen
@@ -78,7 +78,7 @@ Example Usage:
 * pd -pid 0x1a3
 * pd -pid 0x1a3 -a 0x401000 -o c:\dump\ -c c:\dump\test\clean.db
 * pd -p chrome.exe
-* pd -p "(?i).*chrome.*"
+* pd -p "(?i).\*chrome.\*"
 * pd -closemon
 
 Options:
