@@ -185,6 +185,8 @@ public:
 
 	process_stream(HANDLE ph, void* base)
 	{
+		_long_name = NULL;
+		_short_name = NULL;
 		file_alignment = false;
 		this->ph = ph;
 		if( ph != NULL )
@@ -198,11 +200,16 @@ public:
 
 	process_stream(HANDLE ph, void* base, module_list* modules )
 	{
+		_long_name = NULL;
+		_short_name = NULL;
 		init( ph, base, modules );
 	}
 
 	process_stream(DWORD pid, module_list* modules)
 	{
+		_long_name = NULL;
+		_short_name = NULL;
+
 		// Try to open the specified process pid and use the main module as the base
 		file_alignment = false;
 		ph = OpenProcess( PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid);
@@ -227,14 +234,14 @@ public:
 			else
 			{
 				if( GetLastError() == 299 )
-					fprintf(stderr, "ERROR: Unable to open process PID 0x%x since it is a 64 bit process and this tool is running as a 32 bit process.\n", pid);
+					fprintf(stderr, "ERROR: Unable to open process PID 0x%x since it is a 64 bit process and this tool is running as a 32 bit process.\r\n", pid);
 				else
 					PrintLastError(L"create_process_stream CreateToolhelp32Snapshot");
 			}
 		}
 		else
 		{
-			fprintf(stderr, "Failed to open process with PID 0x%x:\n", pid );
+			fprintf(stderr, "Failed to open process with PID 0x%x:\r\n", pid );
 			PrintLastError(L"\tcreate_process_stream");
 		}
 	}
@@ -242,6 +249,8 @@ public:
 	process_stream(DWORD pid, void* base, module_list* modules )
 	{
 		// Try to open the specified process pid
+		_long_name = NULL;
+		_short_name = NULL;
 		file_alignment = false;
 		opened = false;
 		ph = OpenProcess( PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid);
@@ -252,7 +261,7 @@ public:
 		}
 		else
 		{
-			fprintf(stderr, "Failed to open process with PID 0x%x:\n", pid );
+			fprintf(stderr, "Failed to open process with PID 0x%x:\r\n", pid );
 			PrintLastError(L"\tcreate_process_stream");
 		}
 	}
@@ -505,7 +514,7 @@ public:
 		if( opened )
 		{
 			// Close the handle
-			CloseHandle( ph );
+			//CloseHandle( ph ); SHOULD NOT DO THIS. USED BY CREATOR.
 
 			if( _long_name != NULL )
 				delete[] _long_name;

@@ -8,8 +8,10 @@
 #include "module_list.h"
 #include "export_list.h"
 #include <unordered_map>
+#include <unordered_set>
 #include "string.h"
 #include "pe_imports.h"
+#include <functional>
 
 using namespace std;
 using namespace std::tr1;
@@ -29,12 +31,20 @@ enum ALIGNMENT
 	VIRTUAL
 };
 
+struct IMPORT_SUMMARY
+{
+	size_t COUNT_UNIQUE_IMPORT_ADDRESSES;
+	size_t COUNT_UNIQUE_IMPORT_LIBRARIES;
+	unsigned __int64 HASH_GENERIC;
+	unsigned __int64 HASH_SPECIFIC;
+};
+
 class pe_header
 {
 	
 	unsigned __int64 _unique_hash;
 
-	PD_OPTIONS _options;
+	PD_OPTIONS* _options;
 
 	stream_wrapper* _stream;
 	void* _original_base;
@@ -92,12 +102,13 @@ class pe_header
 	__int64 _section_align( __int64 address, DWORD alignment);
 
 public:
-	pe_header( char* filename, PD_OPTIONS options );
-	pe_header( DWORD pid, void* base, module_list* modules, PD_OPTIONS options );
-	pe_header( DWORD pid, module_list* modules, PD_OPTIONS options );
-	pe_header( HANDLE ph, void* base, module_list* modules, PD_OPTIONS options );
+	pe_header( char* filename, PD_OPTIONS* options );
+	pe_header( DWORD pid, void* base, module_list* modules, PD_OPTIONS* options );
+	pe_header( DWORD pid, module_list* modules, PD_OPTIONS* options );
+	pe_header( HANDLE ph, void* base, module_list* modules, PD_OPTIONS* options );
 	
 	bool build_pe_header( __int64 size, bool amd64 );
+	bool build_pe_header( __int64 size, bool amd64, int num_sections_limit );
 	
 	bool process_pe_header( );
 	bool process_import_directory( );
@@ -111,15 +122,20 @@ public:
 
 	unsigned __int64 get_hash();
 
+	IMPORT_SUMMARY get_imports_information( export_list* exports );
+	IMPORT_SUMMARY get_imports_information( export_list* exports, __int64 size_limit );
+
 	bool write_image( char* filename );
 
 	export_list* get_exports();
+	unsigned __int64 get_virtual_size();
 
 	bool is_64();
 	bool is_dll();
 	bool is_exe();
 	bool is_sys();
 	char* get_name();
+	void set_name(char* new_name);
 
 	void print_report( FILE* stream );
 

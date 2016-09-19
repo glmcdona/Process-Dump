@@ -13,11 +13,41 @@
 using namespace std;
 using namespace std::tr1;
 
-struct PD_OPTIONS
+class PD_OPTIONS
 {
+public:
 	bool ImportRec;
 	bool ForceGenHeader;
 	bool Verbose;
+	bool ReconstructHeaderAsDll;
+	bool DumpChunks; // Dump loose code chunks
+	int NumberOfThreads;
+
+	__int64 EntryPointOverride;
+	char* output_path;
+
+	PD_OPTIONS()
+	{
+		output_path = new char[1];
+		strcpy(output_path,"");
+	}
+
+	void set_output_path( char* path )
+	{
+		if( output_path != NULL )
+			delete[] output_path;
+
+		output_path = new char[strlen(path) + 1];
+		strcpy_s( output_path, strlen(path) + 1, path);
+	}
+
+	~PD_OPTIONS()
+	{
+		if( output_path != NULL )
+		{
+			delete[] output_path;
+		}
+	}
 };
 
 class process_description

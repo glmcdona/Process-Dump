@@ -2,7 +2,10 @@
 #include "module_list.h"
 
 
-
+module_list::module_list()
+{
+	// Empty list
+}
 
 module_list::module_list( DWORD pid )
 {
@@ -44,7 +47,7 @@ module_list::module_list( DWORD pid )
 	else
 	{
 		if( GetLastError() == 299 )
-			fprintf(stderr, "ERROR: Unable to open process PID 0x%x since it is a 64 bit process and this tool is running as a 32 bit process.\n", pid);
+			fprintf(stderr, "ERROR: Unable to open process PID 0x%x since it is a 64 bit process and this tool is running as a 32 bit process.\r\n", pid);
 		else
 			PrintLastError(L"module_list OpenProcess");
 	}
@@ -54,7 +57,7 @@ module_list::module_list( DWORD pid )
 	if ( hSnapshot == INVALID_HANDLE_VALUE )
 	{
 		if( global_flag_verbose )
-			printf ("WARNING: Could not gather process information for process pid 0x%X, error code (%d).\n", pid, GetLastError());
+			printf ("WARNING: Could not gather process information for process pid 0x%X, error code (%d).\r\n", pid, GetLastError());
 		return;
 	}
 

@@ -477,6 +477,10 @@
 				>
 			</File>
 			<File
+				RelativePath=".\hash.cpp"
+				>
+			</File>
+			<File
 				RelativePath=".\module_list.cpp"
 				>
 			</File>
@@ -575,6 +579,10 @@
 				>
 			</File>
 			<File
+				RelativePath=".\hash.h"
+				>
+			</File>
+			<File
 				RelativePath=".\module_list.h"
 				>
 			</File>
@@ -593,6 +601,10 @@
 			</File>
 			<File
 				RelativePath=".\pe_imports.h"
+				>
+			</File>
+			<File
+				RelativePath=".\queue.h"
 				>
 			</File>
 			<File
