@@ -725,7 +725,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	if( flagHeader )
 	{
 		printf("Process Dump v2.0\r\n");
-		printf("  Copyright © 2016, Geoff McDonald\r\n");
+		printf("  Copyright Â© 2016, Geoff McDonald\r\n");
 		printf("  http://www.split-code.com/\r\n");
 		printf("  https://github.com/glmcdona/Process-Dump\r\n\r\n");
 	}
@@ -848,7 +848,7 @@ int _tmain(int argc, _TCHAR* argv[])
 		// Add all the running processes to the clean hash database
 		int count_before = db->count();
 		printf("Adding modules from all running processes to clean hash database...\r\n");
-		//add_system_hashes( db, &options );
+		add_system_hashes( db, &options );
 		printf("...added %i new hashes from running processes.\r\n", db->count() - count_before);
 		db->save();
 
