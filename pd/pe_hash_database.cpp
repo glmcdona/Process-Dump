@@ -100,79 +100,83 @@ bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursive
 	char dir_name_expanded[PATH_MAX + 1];
 	if (ExpandEnvironmentStringsA(dir_name, dir_name_expanded, PATH_MAX) < PATH_MAX)
 	{
-		DIR *dir;
-		struct dirent *ent;
-		dir = opendir(dir_name_expanded);
-		if (dir != NULL)
+		DWORD ftyp = GetFileAttributesA(dir_name_expanded);
+		if (ftyp != INVALID_FILE_ATTRIBUTES && ftyp & FILE_ATTRIBUTE_DIRECTORY && !(ftyp & FILE_ATTRIBUTE_REPARSE_POINT))
 		{
-			/* print all the files and directories within directory */
-			while ((ent = readdir(dir)) != NULL) {
-				// Convert the path to wchar format
-				wchar_t* result = new wchar_t[strlen(ent->d_name) + 1];
+			DIR *dir;
+			struct dirent *ent;
+			dir = opendir(dir_name_expanded);
+			if (dir != NULL)
+			{
+				/* print all the files and directories within directory */
+				while ((ent = readdir(dir)) != NULL) {
+					// Convert the path to wchar format
+					wchar_t* result = new wchar_t[strlen(ent->d_name) + 1];
 
-				if (result != NULL)
-				{
-					for (int i = 0; i < strlen(ent->d_name); i++)
-						result[i] = ent->d_name[i];
-					result[strlen(ent->d_name)] = 0;
-
-					if ((ent->d_type & DT_DIR))
+					if (result != NULL)
 					{
-						// Process this subdirectory if recursive flag is on
-						if (recursively && wcscmp(result, L".") != 0 && wcscmp(result, L"..") != 0)
+						for (int i = 0; i < strlen(ent->d_name); i++)
+							result[i] = ent->d_name[i];
+						result[strlen(ent->d_name)] = 0;
+
+						if ((ent->d_type & DT_DIR))
 						{
-							// Build the directory path
-							char* directory = new char[strlen(dir_name_expanded) + strlen(ent->d_name) + 2];
-							sprintf_s(directory, strlen(dir_name_expanded) + strlen(ent->d_name) + 2, "%s\\%s", dir_name_expanded, ent->d_name);
-
-							add_folder(directory, filter, recursively);
-
-							// Cleanup
-							delete[] directory;
-						}
-					}
-					else {
-						// Check if this filename is a match to the specified pattern
-						if (PathMatchSpec(result, filter))
-						{
-							// Process this file
-							int length = wcslen(result) + strlen(dir_name_expanded) + 1;
-							char* filename = new char[length + 1];
-							filename[length] = 0;
-							sprintf(filename, "%s\\%S", dir_name_expanded, result);
-
-							// Processes the specified file
-							FILE* fh = fopen(filename, "rb");
-							if (fh != NULL)
+							// Process this subdirectory if recursive flag is on
+							if (recursively && wcscmp(result, L".") != 0 && wcscmp(result, L"..") != 0)
 							{
-								if (_is_mz(fh))
-								{
-									fclose(fh);
+								// Build the directory path
+								char* directory = new char[strlen(dir_name_expanded) + strlen(ent->d_name) + 2];
+								sprintf_s(directory, strlen(dir_name_expanded) + strlen(ent->d_name) + 2, "%s\\%s", dir_name_expanded, ent->d_name);
 
-									add_file(filename);
-								}
-								else
-									fclose(fh);
+								add_folder(directory, filter, recursively);
+
+								// Cleanup
+								delete[] directory;
 							}
-							else {
-								// Error
-								fprintf(stderr, "Error opening file %s: %s.\r\n", filename, strerror(errno));
-							}
-							delete[] filename;
 						}
+						else {
+							// Check if this filename is a match to the specified pattern
+							if (PathMatchSpec(result, filter))
+							{
+								// Process this file
+								int length = wcslen(result) + strlen(dir_name_expanded) + 1;
+								char* filename = new char[length + 1];
+								filename[length] = 0;
+								sprintf(filename, "%s\\%S", dir_name_expanded, result);
+
+								// Processes the specified file
+								FILE* fh = fopen(filename, "rb");
+								if (fh != NULL)
+								{
+									if (_is_mz(fh))
+									{
+										fclose(fh);
+
+										add_file(filename);
+									}
+									else
+										fclose(fh);
+								}
+								else {
+									// Error
+									fprintf(stderr, "Error opening file %s: %s.\r\n", filename, strerror(errno));
+								}
+								delete[] filename;
+							}
+						}
+						delete[] result;
 					}
-					delete[] result;
+					else
+					{
+						fprintf(stderr, "Failed to allocate memory block of size %i for filename: %s.\r\n", ent->d_namlen + 1, strerror(errno));
+					}
 				}
-				else
-				{
-					fprintf(stderr, "Failed to allocate memory block of size %i for filename: %s.\r\n", ent->d_namlen + 1, strerror(errno));
-				}
+				closedir(dir);
+				return true;
 			}
-			closedir(dir);
-			return true;
-		}
-		else {
-			fprintf(stderr, "Unable to open directory %s: %s.\r\n", dir_name_expanded, strerror(errno));
+			else {
+				fprintf(stderr, "Unable to open directory %s: %s.\r\n", dir_name_expanded, strerror(errno));
+			}
 		}
 	}
 	return false;
