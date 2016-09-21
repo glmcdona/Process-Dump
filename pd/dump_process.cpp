@@ -148,14 +148,11 @@ MBI_BASIC_INFO dump_process::get_mbi_info(unsigned __int64 address)
 	{
 		_MEMORY_BASIC_INFORMATION32* mbi32 = (_MEMORY_BASIC_INFORMATION32*)&mbi;
 
-		if (!(mbi32->Protect & (PAGE_NOACCESS | PAGE_GUARD)))
-		{
-			result.base = mbi32->BaseAddress;
-			result.end = mbi32->BaseAddress + mbi32->RegionSize;
-			result.protect = mbi32->Protect;
-			result.valid = mbi32->State == MEM_FREE && !(mbi32->Protect & (PAGE_NOACCESS | PAGE_GUARD));
-			result.executable = (mbi32->Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) > 0;
-		}
+		result.base = mbi32->BaseAddress;
+		result.end = mbi32->BaseAddress + mbi32->RegionSize;
+		result.protect = mbi32->Protect;
+		result.valid = mbi32->State != MEM_FREE && !(mbi32->Protect & (PAGE_NOACCESS | PAGE_GUARD));
+		result.executable = (mbi32->Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) > 0;
 	}
 
 	return result;

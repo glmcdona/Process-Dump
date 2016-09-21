@@ -848,21 +848,21 @@ int _tmain(int argc, _TCHAR* argv[])
 		// Add all the running processes to the clean hash database
 		int count_before = db->count();
 		printf("Adding modules from all running processes to clean hash database...\r\n");
-		add_system_hashes( db, &options );
+		//add_system_hashes( db, &options );
 		printf("...added %i new hashes from running processes.\r\n", db->count() - count_before);
 		db->save();
 
 		// Add a bunch of folders to the database
 		count_before = db->count();
 		printf("Adding files in %%WINDIR%% to clean hash database...\r\n");
-		db->add_folder("%WINDIR%", L"*", true);
+		//db->add_folder("%WINDIR%", L"*", true);
 		printf("...added %i new hashes from %%WINDIR%%.\r\n", db->count() - count_before);
 		db->save();
 
 		count_before = db->count();
 		printf("Adding files in %%USERPROFILE%% to clean hash database...\r\n");
 		db->add_folder("%USERPROFILE%", L"*", true);
-		printf("...added %i new hashes from %%HOMEPATH%%.\r\n", db->count() - count_before);
+		printf("...added %i new hashes from %%USERPROFILE%%.\r\n", db->count() - count_before);
 		db->save();
 
 		count_before = db->count();
