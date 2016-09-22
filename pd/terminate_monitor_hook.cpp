@@ -465,7 +465,8 @@ bool terminate_monitor_hook::hook_terminate(export_list* exports)
 		}
 		else
 		{
-			PrintLastError(L"Failed to allocate space for NtTerminateProcess hook.");
+			if( _options->Verbose )
+				PrintLastError(L"Failed to allocate space for NtTerminateProcess hook.");
 		}
 
 		return false; // Failed to hook

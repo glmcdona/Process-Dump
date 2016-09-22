@@ -190,7 +190,7 @@ void add_system_hashes( pe_hash_database* db, PD_OPTIONS* options )
 				running_count++;
 		}
 
-		if (count % 40 == 0)
+		if (count % 10 == 0)
 		{
 			// Print the status
 			int waiting_count = work_queue.count();
@@ -337,7 +337,7 @@ void dump_system(pe_hash_database* db, PD_OPTIONS* options)
 			added_new_processes = true;
 		}
 
-		if (count % 40 == 0)
+		if (count % 10 == 0)
 		{
 			// Print the status
 			int waiting_count = work_queue.count();
