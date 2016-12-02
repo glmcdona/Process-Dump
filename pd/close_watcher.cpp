@@ -59,6 +59,7 @@ void close_watcher::_monitor_dump_on_close()
 	PROCESSENTRY32 entry;
 	entry.dwSize = sizeof(PROCESSENTRY32);
 	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
+	DWORD myPid = GetCurrentProcessId();
 
 	while (!_monitor_request_stop)
 	{
@@ -70,7 +71,7 @@ void close_watcher::_monitor_dump_on_close()
 			{
 				while (Process32Next(snapshot, &entry) == TRUE)
 				{
-					if (hooked_pids.count(entry.th32ProcessID) == 0)
+					if ( myPid != entry.th32ProcessID && hooked_pids.count(entry.th32ProcessID) == 0)
 					{
 						// Test code to only hook notepad.exe
 						//if (_wcsicmp(entry.szExeFile, L"notepad.exe") == 0)
