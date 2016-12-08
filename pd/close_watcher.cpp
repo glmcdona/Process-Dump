@@ -73,20 +73,23 @@ void close_watcher::_monitor_dump_on_close()
 				{
 					if ( myPid != entry.th32ProcessID && hooked_pids.count(entry.th32ProcessID) == 0)
 					{
-						// Test code to only hook notepad.exe
-						//if (_wcsicmp(entry.szExeFile, L"notepad.exe") == 0)
-						//{
-							// New process
-							dump_process* dumper = new dump_process(entry.th32ProcessID, _clean_db, _options, true);
-							if (dumper->monitor_close_start())
-							{
-								printf("...hooked close of: pid 0x%x,%S\r\n", entry.th32ProcessID, entry.szExeFile);
-								hooked_processes.insert(std::pair<DWORD, dump_process*>(dumper->get_pid(), dumper));
-								hooked_pids.insert(dumper->get_pid());
-							}
-							else
-								delete dumper;
-						//}
+						if (_wcsicmp(entry.szExeFile, L"csrss.exe") != 0) // TEMPORARY FIX TO ISSUE #10 CRASHING CSRSS.EXE
+						{
+							// Test code to only hook notepad.exe
+							//if (_wcsicmp(entry.szExeFile, L"notepad.exe") == 0)
+							//{
+								// New process
+								dump_process* dumper = new dump_process(entry.th32ProcessID, _clean_db, _options, true);
+								if (dumper->monitor_close_start())
+								{
+									printf("...hooked close of: pid 0x%x,%S\r\n", entry.th32ProcessID, entry.szExeFile);
+									hooked_processes.insert(std::pair<DWORD, dump_process*>(dumper->get_pid(), dumper));
+									hooked_pids.insert(dumper->get_pid());
+								}
+								else
+									delete dumper;
+							//}
+						}
 					}
 				}
 			}
