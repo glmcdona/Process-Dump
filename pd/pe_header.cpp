@@ -1428,7 +1428,7 @@ bool pe_header::process_disk_image( export_list* exports )
 			if( _original_base != 0 )
 			{
 				// Adjust the preferred image base, this way the relocations doesn't have to be fixed
-				_header_pe64->OptionalHeader.ImageBase = (DWORD) _original_base;
+				_header_pe64->OptionalHeader.ImageBase = reinterpret_cast<__int64> (_original_base);
 			}
 
 			// Change the physical alignment to use the virtual alignment
