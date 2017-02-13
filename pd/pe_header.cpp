@@ -1179,7 +1179,7 @@ bool pe_header::process_disk_image( export_list* exports )
 				_header_sections[_num_sections-1].Misc.VirtualSize = this->_section_align(_header_sections[_num_sections-1].Misc.VirtualSize, this->_header_pe32->OptionalHeader.SectionAlignment) + new_section_size;
 				_header_sections[_num_sections-1].SizeOfRawData = _header_sections[_num_sections-1].Misc.VirtualSize;
 
-				larger_image_size = this->_image_size + new_section_size;
+				larger_image_size = this->_section_align((long long) this->_image_size, this->_header_pe32->OptionalHeader.SectionAlignment) + new_section_size;
 				larger_image = new unsigned char[larger_image_size];
 				memset(larger_image, 0, larger_image_size);
 				memcpy(larger_image, _image, _image_size);
@@ -1188,13 +1188,13 @@ bool pe_header::process_disk_image( export_list* exports )
 					printf( "INFO: Writing added import table.\r\n" );
 				
 				// Write to the new section
-				peimp->build_table( larger_image + _image_size, new_section_size, (__int64) _image_size, (__int64) 0, descriptor_size );
+				peimp->build_table( larger_image + this->_section_align((long long) _image_size, this->_header_pe32->OptionalHeader.SectionAlignment), new_section_size, (__int64) _image_size, (__int64) 0, descriptor_size );
 				
 				if( _options->Verbose )
 					printf( "INFO: Updating import data directory.\r\n" );
 
 				// Update the PE header to refer to it
-				_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = _image_size;
+				_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = this->_section_align((long long) _image_size, this->_header_pe32->OptionalHeader.SectionAlignment);
 				_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = descriptor_size;
 				
 				delete peimp;
@@ -1237,7 +1237,7 @@ bool pe_header::process_disk_image( export_list* exports )
 						// Calculate the virtual size manually
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on image size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
 							this->get_name(), location, i, this->_header_sections[i].Misc.VirtualSize, this->_header_sections[i+1].VirtualAddress - this->_header_sections[i].VirtualAddress );
 						delete[] location;
 						this->_header_sections[i].Misc.VirtualSize = this->_header_sections[i+1].VirtualAddress - this->_header_sections[i].VirtualAddress;
@@ -1247,7 +1247,7 @@ bool pe_header::process_disk_image( export_list* exports )
 						// Use MAX_SECTION_SIZE
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on maximum section size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
 							this->get_name(), location, i, this->_header_sections[i].Misc.VirtualSize, MAX_SECTION_SIZE );
 						delete[] location;
 						this->_header_sections[i].Misc.VirtualSize = MAX_SECTION_SIZE;
@@ -1395,7 +1395,8 @@ bool pe_header::process_disk_image( export_list* exports )
 				_header_sections[_num_sections-1].Misc.VirtualSize = this->_section_align(_header_sections[_num_sections-1].Misc.VirtualSize, this->_header_pe64->OptionalHeader.SectionAlignment) + new_section_size;
 				_header_sections[_num_sections-1].SizeOfRawData = _header_sections[_num_sections-1].Misc.VirtualSize;
 
-				larger_image_size = this->_image_size + new_section_size;
+				larger_image_size = this->_section_align((long long) this->_image_size, this->_header_pe64->OptionalHeader.SectionAlignment) + new_section_size;
+				
 				larger_image = new unsigned char[larger_image_size];
 				memset(larger_image, 0, larger_image_size);
 				memcpy(larger_image, _image, _image_size);
@@ -1404,13 +1405,13 @@ bool pe_header::process_disk_image( export_list* exports )
 					printf( "INFO: Writing added import table.\r\n" );
 				
 				// Write to the new section
-				peimp->build_table( larger_image + _image_size, new_section_size, (__int64) _image_size, (__int64) 0, descriptor_size );
+				peimp->build_table( larger_image + this->_section_align((long long) this->_image_size, this->_header_pe64->OptionalHeader.SectionAlignment), new_section_size, (__int64) _image_size, (__int64) 0, descriptor_size );
 				
 				if( _options->Verbose )
 					printf( "INFO: Updating import data directory.\r\n" );
 
 				// Update the PE header to refer to it
-				_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = _image_size;
+				_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = this->_section_align((long long) this->_image_size, this->_header_pe64->OptionalHeader.SectionAlignment);
 				_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = descriptor_size;
 				
 				delete peimp;
@@ -1455,7 +1456,7 @@ bool pe_header::process_disk_image( export_list* exports )
 						// Calculate the virtual size manually
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on image virtual size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
 							this->get_name(), location, i, this->_header_sections[i].Misc.VirtualSize, this->_header_sections[i+1].VirtualAddress - this->_header_sections[i].VirtualAddress );
 						delete[] location;
 						this->_header_sections[i].Misc.VirtualSize = this->_header_sections[i+1].VirtualAddress - this->_header_sections[i].VirtualAddress;
@@ -1465,7 +1466,7 @@ bool pe_header::process_disk_image( export_list* exports )
 						// Use MAX_SECTION_SIZE
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on maximum section size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
 							this->get_name(), location, i, this->_header_sections[i].Misc.VirtualSize, MAX_SECTION_SIZE );
 						delete[] location;
 						this->_header_sections[i].Misc.VirtualSize = MAX_SECTION_SIZE;
@@ -1500,7 +1501,7 @@ bool pe_header::process_disk_image( export_list* exports )
 			_header_pe64->OptionalHeader.SizeOfImage = required_space;
 			
 			if( _options->Verbose )
-						printf( "INFO: Copying the corrected memory PE header into file PE header format.\r\n");
+				printf( "INFO: Copying the corrected memory PE header into file PE header format.\r\n");
 
 			// Copy over the modified PE header into the imaged version
 			if( _test_read( larger_image, larger_image_size, larger_image, _header_pe64->OptionalHeader.SizeOfHeaders ) &&
