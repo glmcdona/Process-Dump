@@ -164,6 +164,12 @@ As well as all modules in all running processes
 
 # Version history
 
+## Version 2.1 (February 12th, 2017)
+* Fixed a bug where the last section in some cases would instead be filled with zeros. Thanks to megastupidmonkey for reporting this issue.
+* Fixed a bug where 64-bit base addresses would be truncated to a 32-bit address. It now properly keeps the full 64-bit module base address. Thanks to megastupidmonkey for reporting this issue.
+* Addressed an issue where the processes dump close monitor would crash csrss.exe.
+* Stopped Process Dump from hooking it's own process in close monitor mode. 
+
 ## Version 2.0 (September 18th, 2016)
 * Added new flag '-closemon' which runs Process Dump in a monitoring
    mode. It will pause and dump any process just as it closes. This is designed
