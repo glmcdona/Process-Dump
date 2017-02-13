@@ -15,7 +15,7 @@ I'm maintaining an official compiled release on my website here:
 
 # Installation
 You can download the latest compiled release of Process Dump here:
-* http://www.split-code.com/files/pd_v2_0.zip
+* http://www.split-code.com/files/pd_v2_1.zip
 
 This tool requires Microsoft Visual C++ Redistributable for Visual Studio 2015 to be installed to work:
 * https://www.microsoft.com/en-ca/download/details.aspx?id=48145
@@ -73,8 +73,8 @@ Example filenames of dumped files
 
 
 # Help Page
-Process Dump v2.0
-  Copyright ® 2016, Geoff McDonald
+Process Dump v2.1
+  Copyright ® 2017, Geoff McDonald
   http://www.split-code.com/
 
 Process Dump (pd.exe) is a tool used to dump both 32 and 64 bit executable modules back to disk from memory within a process address space. This tool is able to find and dump hidden modules as well as loose executable code chunks, and it uses a clean hash database to exclude dumping of known clean files. This tool uses an aggressive import reconstruction approach that links all DWORD/QWORDs that point to an export in the process to the corresponding export function. Process dump can be used to dump all unknown code from memory ('-system' flag), dump specific processes, or run in a monitoring mode that dumps all processes just before they terminate.
