@@ -106,6 +106,9 @@ Options:
 * -p \<regex\>
 > Dumps all modules not matching the clean hash database from the process name found to match the filter into specified pid into the current working directory.
 
+* -a \<module base address\>
+> Dumps a module at the specified base address from the process.
+
 * -g
 > Forces generation of PE headers from scratch, ignoring existing headers.
 
