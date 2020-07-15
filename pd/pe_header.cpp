@@ -720,36 +720,29 @@ bool pe_header::process_pe_header( )
 						{
 							// We are unsure if we need to process this as a 32bit or 64bit PE header, lets figure it out.
 							// The first part is independent of the 32 or 64 bit definition.
-							if( ((IMAGE_NT_HEADERS64*) base_pe)->FileHeader.Machine == IMAGE_FILE_MACHINE_I386 )
+							if ( ((IMAGE_NT_HEADERS32*)base_pe)->Signature == 0x4550 && ((IMAGE_NT_HEADERS32*)base_pe)->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC )
 							{
 								// 32bit module
 								this->_header_pe32 = ((IMAGE_NT_HEADERS32*) base_pe);
-
-								if( _header_pe32->Signature == 0x4550 && _header_pe32->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC )
-								{
-									this->_parsed_pe_32 = true;
-									if( _options->Verbose )
-										fprintf( stdout, "INFO: Loaded PE header for %s. Somewhat parsed: %d\r\n", this->get_name(), this->somewhat_parsed() );
-									return true;
-								}
+								this->_parsed_pe_32 = true;
+								if( _options->Verbose )
+									fprintf( stdout, "INFO: Loaded PE header for %s. Somewhat parsed: %d\r\n", this->get_name(), this->somewhat_parsed() );
+								return true;
 							}
-							else if( ((IMAGE_NT_HEADERS64*) base_pe)->FileHeader.Machine == IMAGE_FILE_MACHINE_IA64 ||
-								((IMAGE_NT_HEADERS64*) base_pe)->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64)
+							else if( ((IMAGE_NT_HEADERS64*)base_pe)->Signature == 0x4550 && ((IMAGE_NT_HEADERS64*)base_pe)->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC )
 							{
 								// 64bit module
 								this->_header_pe64 = ((IMAGE_NT_HEADERS64*) base_pe);
-
-								if( _header_pe64->Signature == 0x4550 && _header_pe64->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC )
-								{
-									this->_parsed_pe_64 = true;
-									if( _options->Verbose )
-										fprintf( stdout, "INFO: Loaded PE header for %s. Somewhat parsed: %d\r\n", this->get_name(), this->somewhat_parsed() );
-									return true;
-								}
+								this->_parsed_pe_64 = true;
+								if( _options->Verbose )
+									fprintf( stdout, "INFO: Loaded PE header for %s. Somewhat parsed: %d\r\n", this->get_name(), this->somewhat_parsed() );
+								return true;
 							}
 							else
 							{
 								// error
+								if (_options->Verbose)
+									fprintf(stdout, "INFO: Invalid PE header for %s. Somewhat parsed: %d\r\n", this->get_name(), this->somewhat_parsed());
 							}
 						}
 					}
