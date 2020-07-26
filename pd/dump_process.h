@@ -58,7 +58,7 @@ public:
 	DWORD get_pid() { return _pid; };
 	bool build_export_list();
 	bool build_export_list(export_list* result, char* library, module_list* modules);
-	int get_all_hashes(unordered_set<unsigned __int64>* output_hashes);
+	int get_all_hashes(unordered_set<unsigned __int64>* output_hashes, unordered_set<unsigned __int64>* output_hashes_eps, unordered_set<unsigned __int64>* output_hashes_ep_shorts);
 	unsigned __int64 hash_codechunk_header(__int64 base);
 	bool is64();
 	bool get_process_name(char* process_name, SIZE_T byte_length);

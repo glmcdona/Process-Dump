@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nmd_assembly.h"
 #include "stdafx.h"
 #include <stdio.h>
 #include "windows.h"
@@ -12,12 +13,16 @@
 #include "string.h"
 #include "pe_imports.h"
 #include <functional>
+#include "pe_hash_database.h"
 
 using namespace std;
 using namespace std::tr1;
 
 
 #define FILEPATH_SIZE 265
+
+#define EP_HASH_OPCODES_MIN 30
+#define EP_HASH_OPCODES_MAX 100
 
 // 10MB
 #define MAX_SECTION_SIZE (1024 * 1000) * 60
@@ -43,6 +48,8 @@ class pe_header
 {
 	
 	unsigned __int64 _unique_hash;
+	unsigned __int64 _unique_hash_ep;
+	unsigned __int64 _unique_hash_ep_short;
 
 	PD_OPTIONS* _options;
 
@@ -95,7 +102,8 @@ class pe_header
 
 	bool _test_read( unsigned char* buffer, SIZE_T length, unsigned char* read_ptr, SIZE_T read_length );
 	
-	
+	unsigned __int64 _hash_asm(SIZE_T offset);
+	unsigned __int64 _hash_short_asm(SIZE_T offset);
 	
 	
 	DWORD _section_align( DWORD address, DWORD alignment);
@@ -115,12 +123,15 @@ public:
 	bool process_export_directory( );
 	bool process_relocation_directory();
 	bool process_sections( );
-	bool process_disk_image( export_list* exports );
+	bool process_disk_image(export_list* exports, pe_hash_database* hash_database);
 	bool process_hash( );
+	bool process_hash_ep( );
 
 	bool somewhat_parsed();
 
 	unsigned __int64 get_hash();
+	unsigned __int64 get_hash_ep();
+	unsigned __int64 get_hash_ep_short();
 
 	IMPORT_SUMMARY get_imports_information( export_list* exports );
 	IMPORT_SUMMARY get_imports_information( export_list* exports, __int64 size_limit );

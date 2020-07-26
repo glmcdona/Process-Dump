@@ -28,7 +28,7 @@ dump_process::dump_process(DWORD pid, pe_hash_database* db, PD_OPTIONS* options,
 		// try opening with minimal permissions. This works for most actions (except terminate hooking)
 		_ph = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid);
 		if (_ph != NULL && _options->Verbose)
-			fprintf(stderr, "WARNING: For PID 0x%x, we had to open handle with fewer permissions than expected. Dropped PROCESS_VM_WRITE and PROCESS_VM_OPERATION.\r\n", pid);
+			fprintf(stderr, "WARNING: For PID 0x%x, we had to open handle with fewer permissions than expected. Dropped PROCESS_VM_WRITE and PROCESS_VM_OPERATION.\n", pid);
 	}
 	
 	
@@ -67,7 +67,7 @@ dump_process::dump_process(DWORD pid, pe_hash_database* db, PD_OPTIONS* options,
 			if (!_quieter)
 			{
 				if (GetLastError() == 299)
-					fprintf(stderr, "ERROR: Unable to snapshot process PID 0x%x. This can be as a result of the process being a 64 bit process and this tool is running as a 32 bit process, or the process may have not finished being created or already closed.\r\n", pid);
+					fprintf(stderr, "ERROR: Unable to snapshot process PID 0x%x. This can be as a result of the process being a 64 bit process and this tool is running as a 32 bit process, or the process may have not finished being created or already closed.\n", pid);
 				else
 					PrintLastError(L"dump_process CreateToolhelp32Snapshot");
 			}
@@ -80,7 +80,7 @@ dump_process::dump_process(DWORD pid, pe_hash_database* db, PD_OPTIONS* options,
 	{
 		if (!_quieter)
 		{
-			fprintf(stderr, "Failed to open process with PID 0x%x:\r\n", pid);
+			fprintf(stderr, "Failed to open process with PID 0x%x:\n", pid);
 			PrintLastError(L"\tdump_process");
 		}
 	}
@@ -119,7 +119,7 @@ bool dump_process::is64()
 		return _is64;
 	
 	// Failed. Assume 64 bit.
-	fprintf(stderr, "ERROR: For PID 0x%x, was unable to look at main module to determine 32 or 64 bit mode.\r\n", _pid);
+	fprintf(stderr, "ERROR: For PID 0x%x, was unable to look at main module to determine 32 or 64 bit mode.\n", _pid);
 	return true;
 }
 
@@ -159,7 +159,7 @@ MBI_BASIC_INFO dump_process::get_mbi_info(unsigned __int64 address)
 }
 
 
-int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes)
+int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes, unordered_set<unsigned __int64>* output_hashes_eps, unordered_set<unsigned __int64>* output_hashes_ep_shorts)
 {
 	// Adds all the modules in the process to the output array
 	if( _ph != NULL )
@@ -207,7 +207,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes)
 				if (mbi_info.base > 0 && mbi_info.end > 0 && mbi_info.valid )
 				{
 					if( _options->Verbose )
-						fprintf( stdout, "INFO: Scanning from region from 0x%llX to 0x%llX for MZ headers.\r\n", mbi_info.base, mbi_info.end );
+						fprintf( stdout, "INFO: Scanning from region from 0x%llX to 0x%llX for MZ headers.\n", mbi_info.base, mbi_info.end );
 
 					// This heap may have a PE file, check all page alignments for a "MZ".
 					unsigned __int64 base = mbi_info.base - (mbi_info.base % PAGE_SIZE); // shouldn't be required.
@@ -221,7 +221,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes)
 							if( output[0] == 'M' && output[1] == 'Z' )
 							{
 								if( _options->Verbose )
-									fprintf( stdout, "INFO: Found MZ header at %llX.\r\n", base );
+									fprintf( stdout, "INFO: Found MZ header at %llX.\n", base );
 
 								// Bingo, possible MZ file
 								pe_header* header = new pe_header( _pid, (void*) base, modules, _options );
@@ -253,6 +253,38 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes)
 										// Add this to the output hash array
 										output_hashes->insert( hash );
 									}
+
+									if (output_hashes_ep_shorts != NULL)
+									{
+										// Also get the entrypoint hash
+										hash = header->get_hash_ep_short();
+
+										if (hash != 0)
+										{
+											if( output_hashes_ep_shorts->count(hash) == 0 )
+											{
+												// Add this to the output hash array
+												output_hashes_ep_shorts->insert(hash);
+											}
+										}
+
+										if (output_hashes_eps != NULL)
+										{
+											// Also get the entrypoint hash
+											hash = header->get_hash_ep();
+
+											if (hash != 0 && output_hashes_eps->count(hash) == 0)
+											{
+												// Add this to the output hash array
+												output_hashes_eps->insert(hash);
+											}
+										}
+									}
+
+									
+
+									
+
 								}
 								delete header;
 							}
@@ -273,7 +305,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes)
 			{
 				// One last loop to add the hashes from all stray executable heaps
 				if( _options->Verbose )
-					fprintf( stdout, "INFO: Looking at unattached executable heaps...\r\n" );
+					fprintf( stdout, "INFO: Looking at unattached executable heaps...\n" );
 				
 				int count_new_header_hashes = 0;
 				for (set<unsigned __int64>::iterator it=executable_heaps.begin(); it!=executable_heaps.end(); it++)
@@ -283,17 +315,17 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes)
 					unsigned __int64 chunk_header_hash = this->hash_codechunk_header(*it);
 
 					if( _options->Verbose )
-						fprintf( stdout, "INFO: Unattached heap start hash 0x%llX\r\n", chunk_header_hash );
+						fprintf( stdout, "INFO: Unattached heap start hash 0x%llX\n", chunk_header_hash );
 
 					if( chunk_header_hash != 0 && !_db_clean->contains(chunk_header_hash) && output_hashes->count( chunk_header_hash ) == 0 )
 					{
 						if( _options->Verbose )
-							fprintf( stdout, "INFO: Unattached heap start hash is new.\r\n" );
+							fprintf( stdout, "INFO: Unattached heap start hash is new.\n" );
 						
 						if( count_new_header_hashes++ > CODECHUNK_NEW_HASH_LIMIT )
 						{
 							if( _options->Verbose )
-								fprintf( stdout, "INFO: Too many unique loose code chunks. Stopped processing more chunks.\r\n" );
+								fprintf( stdout, "INFO: Too many unique loose code chunks. Stopped processing more chunks.\n" );
 							break; // Too many new code chunks
 						}
 
@@ -312,7 +344,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes)
 						if( import_summary.HASH_GENERIC != 0 && !_db_clean->contains(import_summary.HASH_GENERIC) && output_hashes->count( import_summary.HASH_GENERIC ) == 0 )
 						{
 							if( _options->Verbose )
-								fprintf( stdout, "INFO: Adding hash from unattached heap at 0x%llX to process hash list: Hash=0x%llX\r\n", *it, import_summary.HASH_GENERIC );
+								fprintf( stdout, "INFO: Adding hash from unattached heap at 0x%llX to process hash list: Hash=0x%llX\n", *it, import_summary.HASH_GENERIC );
 							
 							output_hashes->insert( import_summary.HASH_GENERIC );
 						}
@@ -320,14 +352,14 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes)
 					}
 				}
 				if( _options->Verbose )
-					fprintf( stdout, "INFO: Done looking at unattached executable heaps...\r\n" );
+					fprintf( stdout, "INFO: Done looking at unattached executable heaps...\n" );
 			}
 
 			delete modules;
 		}
 	}
 	else if( _options->Verbose )
-		fprintf( stdout, "INFO: Null process handle %s.\r\n", this->_process_name );
+		fprintf( stdout, "INFO: Null process handle %s.\n", this->_process_name );
 	
 	return false;
 }
@@ -361,7 +393,7 @@ bool dump_process::build_export_list()
 	if( !_export_list_built )
 	{
 		if( !_quieter )
-			printf( "... building import reconstruction table ...\r\n" );
+			printf( "... building import reconstruction table ...\n" );
 		
 		if (_ph != NULL)
 		{
@@ -431,8 +463,8 @@ void dump_process::dump_header(pe_header* header, __int64 base, DWORD pid)
 				if( hash != 0 && !_db_clean->contains(hash) )
 				{
 					if( _options->Verbose )
-							printf(" preparing disk image for '%s' at %llX\r\n", header->get_name(), (__int64) base);
-					if( header->process_disk_image(&this->_export_list) )
+							printf(" preparing disk image for '%s' at %llX\n", header->get_name(), (__int64) base);
+					if( header->process_disk_image(&this->_export_list, this->_db_clean ) )
 					{
 						// Build the name that we will dump this image as
 						char* extension = ( header->is_exe() ? "exe" :
@@ -446,7 +478,7 @@ void dump_process::dump_header(pe_header* header, __int64 base, DWORD pid)
 							sprintf(filename, "%s_PID%x_%s_%llX_%s.%s", _process_name, pid, header->get_name(), (__int64)  base, (header->is_64() ? "x64": "x86"), extension );
 						
 						// Dump the module
-						printf(" dumping '%s' at %llX to file '%s'\r\n", extension, (__int64) base, filename);
+						printf(" dumping '%s' at %llX to file '%s'\n", extension, (__int64) base, filename);
 						header->write_image(filename);
 						
 						delete[] filename;
@@ -454,39 +486,39 @@ void dump_process::dump_header(pe_header* header, __int64 base, DWORD pid)
 					else
 					{
 						if( _options->Verbose )
-							printf("Failed to process disk image for module at %llX\r\n", base);
+							printf("Failed to process disk image for module at %llX\n", base);
 					}
 				}
 				else
 				{
 					if( _options->Verbose )
-						printf("Null hash or the has is already in the clean hash database at %llX\r\n", base);
+						printf("Null hash or the has is already in the clean hash database at %llX\n", base);
 				}
 
 			}
 			else
 			{
 				if( _options->Verbose )
-					printf("Failed to process import directory for module at %llX\r\n", base);
+					printf("Failed to process import directory for module at %llX\n", base);
 			}
 		}
 		else
 		{
 			if( _options->Verbose )
-				printf("Module was not somehwat parsed for module at %llX\r\n", base);
+				printf("Module was not somehwat parsed for module at %llX\n", base);
 		}
 	}
 	else
 	{
 		if( _options->Verbose )
-			printf("Failed to process sections for module at %llX\r\n", base);
+			printf("Failed to process sections for module at %llX\n", base);
 	}
 }
 
 void dump_process::dump_region(__int64 base)
 {
 	// Walk through the pages while dumping all MZ files that do not match our good hash database.
-	printf( "\r\ndumping starting at %llX from process %s with pid 0x%x...\r\n", (__int64) base, this->_process_name, this->_pid );
+	printf( "\ndumping starting at %llX from process %s with pid 0x%x...\n", (__int64) base, this->_process_name, this->_pid );
 	if( _ph != NULL )
 	{
 		// First build the export list for this process
@@ -498,7 +530,7 @@ void dump_process::dump_region(__int64 base)
 			if( _options->ForceGenHeader || !header->process_pe_header() )
 			{
 				if( _options->Verbose )
-					printf( "Generating 32-bit PE header for module at %llX.\r\n", base );
+					printf( "Generating 32-bit PE header for module at %llX.\n", base );
 				
 				// Build the pe header as 32 and 64 bit since it could be either
 				header->build_pe_header(0x1000ffff, true );
@@ -506,7 +538,7 @@ void dump_process::dump_region(__int64 base)
 				delete header;
 
 				if( _options->Verbose )
-					printf( "Generating 64-bit PE header for module at %llX.\r\n", base );
+					printf( "Generating 64-bit PE header for module at %llX.\n", base );
 				header = new pe_header( _pid, (void*) base, modules, _options );
 				header->build_pe_header(0x1000ffff, false ); 
 				dump_header(header, base, _pid);
@@ -514,7 +546,7 @@ void dump_process::dump_region(__int64 base)
 			else
 			{
 				if( _options->Verbose )
-					printf( "Using existing PE header for module at %llX.\r\n", base );
+					printf( "Using existing PE header for module at %llX.\n", base );
 				dump_header(header, base, _pid);
 			}
 
@@ -525,7 +557,7 @@ void dump_process::dump_region(__int64 base)
 		}
 		else
 		{
-			printf("Failed to build export list.\r\n");
+			printf("Failed to build export list.\n");
 		}
 
 	}
@@ -541,7 +573,7 @@ bool dump_process::monitor_close_start()
 	{
 		// Add a hook on for when the process terminates so that we can dump it.
 		if( _options->Verbose )
-			printf("Hooking process terminate for process %s...\r\n", this->_process_name);
+			printf("Hooking process terminate for process %s...\n", this->_process_name);
 		_term_hook = new terminate_monitor_hook(_ph, _pid, this->is64(), this->_options );
 
 		// Load the exports needed for the hooks
@@ -605,7 +637,7 @@ bool dump_process::monitor_close_dump_and_resume()
 void dump_process::dump_all()
 {
 	// Walk through the pages while dumping all MZ files that do not match our good hash database.
-	printf( "dumping process %s with pid 0x%x...\r\n", this->_process_name, this->_pid );
+	printf( "dumping process %s with pid 0x%x...\n", this->_process_name, this->_pid );
 	if( _ph != NULL )
 	{
 		// First build the export list for this process
@@ -651,7 +683,7 @@ void dump_process::dump_all()
 				if ( mbi_info.base > 0 && mbi_info.end > 0 && mbi_info.valid )
 				{
 					if (_options->Verbose)
-						fprintf(stdout, "INFO: Scanning from region from 0x%llX to 0x%llX for MZ headers.\r\n", mbi_info.base, mbi_info.end);
+						fprintf(stdout, "INFO: Scanning from region from 0x%llX to 0x%llX for MZ headers.\n", mbi_info.base, mbi_info.end);
 
 
 					// This heap may have a PE file, check all page alignments for a "MZ".
@@ -695,7 +727,7 @@ void dump_process::dump_all()
 											if (_options->ForceGenHeader)
 											{
 												// Use the existing PE header only to get the hash, then generate a PE header for the dumping.
-												fprintf(stdout, "Dumping a module but ignoring existing PE Header for module at 0x%llX.\r\n", base);
+												fprintf(stdout, "Dumping a module but ignoring existing PE Header for module at 0x%llX.\n", base);
 												pe_header* header_dump = new pe_header(_pid, (void*)base, modules, _options);
 												header_dump->build_pe_header(0x1000, true); // 64bit
 												dump_header(header_dump, base, _pid);
@@ -706,7 +738,7 @@ void dump_process::dump_all()
 												dump_header(header_dump, base, _pid);
 												delete header_dump;
 											}
-											else if (header->process_disk_image(&this->_export_list))
+											else if (header->process_disk_image(&this->_export_list, this->_db_clean))
 											{
 												// Build the name that we will dump this image as
 												char* extension = (header->is_exe() ? "exe" :
@@ -720,7 +752,7 @@ void dump_process::dump_all()
 													sprintf(filename, "%s_PID%x_%s_%llX_%s.%s", _process_name, _pid, header->get_name(), (__int64)base, (header->is_64() ? "x64" : "x86"), extension);
 
 												// Dump the module
-												printf(" dumping '%s' at %llX to file '%s'\r\n", extension, (__int64)base, filename);
+												printf(" dumping '%s' at %llX to file '%s'\n", extension, (__int64)base, filename);
 												header->write_image(filename);
 
 												delete[] filename;
@@ -752,7 +784,7 @@ void dump_process::dump_all()
 			{
 				// One last loop to add the hashes from all stray executable heaps
 				if( _options->Verbose )
-					fprintf( stdout, "INFO: Looking at unattached executable heaps...\r\n" );
+					fprintf( stdout, "INFO: Looking at unattached executable heaps...\n" );
 
 				int count_new_header_hashes = 0;
 				for (set<unsigned __int64>::iterator it=executable_heaps.begin(); it!=executable_heaps.end(); it++)
@@ -762,17 +794,17 @@ void dump_process::dump_all()
 					unsigned __int64 chunk_header_hash = this->hash_codechunk_header(*it);
 
 					if( _options->Verbose )
-						fprintf( stdout, "INFO: Unattached heap start hash 0x%llX\r\n", chunk_header_hash );
+						fprintf( stdout, "INFO: Unattached heap start hash 0x%llX\n", chunk_header_hash );
 
 					if( chunk_header_hash != 0 && !_db_clean->contains(chunk_header_hash) )
 					{
 						if( _options->Verbose )
-							fprintf( stdout, "INFO: Unattached heap start hash is new.\r\n" );
+							fprintf( stdout, "INFO: Unattached heap start hash is new.\n" );
 						
 						if( count_new_header_hashes++ > CODECHUNK_NEW_HASH_LIMIT )
 						{
 							if( _options->Verbose )
-								fprintf( stdout, "INFO: Too many unique loose code chunks. Stopped processing more chunks.\r\n" );
+								fprintf( stdout, "INFO: Too many unique loose code chunks. Stopped processing more chunks.\n" );
 							break; // Too many new code chunks
 						}
 						
@@ -788,11 +820,11 @@ void dump_process::dump_all()
 						if( import_summary.HASH_GENERIC != 0 && !_db_clean->contains(import_summary.HASH_GENERIC) )
 						{
 							if( _options->Verbose )
-								fprintf( stdout, "INFO: Unattached executable heap at 0x%llX found with %i imports matched.\r\n", *it, import_summary.COUNT_UNIQUE_IMPORT_ADDRESSES );
+								fprintf( stdout, "INFO: Unattached executable heap at 0x%llX found with %i imports matched.\n", *it, import_summary.COUNT_UNIQUE_IMPORT_ADDRESSES );
 							
 							if( header->somewhat_parsed() && import_summary.COUNT_UNIQUE_IMPORT_ADDRESSES >= 2 ) // Require at least 5 imports for dumping
 							{
-								fprintf( stdout, "Dumping unattached executable code chunk from 0x%llX.\r\n", *it );
+								fprintf( stdout, "Dumping unattached executable code chunk from 0x%llX.\n", *it );
 								pe_header* header_dump = new pe_header( _pid, (void*) *it, modules, _options );
 								header_dump->build_pe_header( 0x1000, true ); // 64bit
 								header_dump->set_name("codechunk");
@@ -810,7 +842,7 @@ void dump_process::dump_all()
 					}
 				}
 				if( _options->Verbose )
-					fprintf( stdout, "INFO: Done looking at unattached executable heaps...\r\n" );
+					fprintf( stdout, "INFO: Done looking at unattached executable heaps...\n" );
 			}
 
 			delete modules;

@@ -234,14 +234,14 @@ public:
 			else
 			{
 				if( GetLastError() == 299 )
-					fprintf(stderr, "ERROR: Unable to open process PID 0x%x since it is a 64 bit process and this tool is running as a 32 bit process.\r\n", pid);
+					fprintf(stderr, "ERROR: Unable to open process PID 0x%x since it is a 64 bit process and this tool is running as a 32 bit process.\n", pid);
 				else
 					PrintLastError(L"create_process_stream CreateToolhelp32Snapshot");
 			}
 		}
 		else
 		{
-			fprintf(stderr, "Failed to open process with PID 0x%x:\r\n", pid );
+			fprintf(stderr, "Failed to open process with PID 0x%x:\n", pid );
 			PrintLastError(L"\tcreate_process_stream");
 		}
 	}
@@ -261,7 +261,7 @@ public:
 		}
 		else
 		{
-			fprintf(stderr, "Failed to open process with PID 0x%x:\r\n", pid );
+			fprintf(stderr, "Failed to open process with PID 0x%x:\n", pid );
 			PrintLastError(L"\tcreate_process_stream");
 		}
 	}

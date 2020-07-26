@@ -21,6 +21,8 @@ public:
 	bool Verbose;
 	bool ReconstructHeaderAsDll;
 	bool DumpChunks; // Dump loose code chunks
+	bool EntryPointHash;
+	bool ForceReconstructEntryPoint;
 	int NumberOfThreads;
 
 	__int64 EntryPointOverride;

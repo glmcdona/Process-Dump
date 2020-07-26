@@ -61,7 +61,7 @@ If you are running an automated sandbox or manual anti-malware research environm
 * All the dumped components will be in the working directory of pd64.exe. You can change the output path using the '-o' flag,
 
 
-Notes on the naming convention of dumped modules:
+# Notes on the naming convention of dumped modules:
 * 'hiddemodule' in the filename instead of the module name indicates the module was not properly registered in the process.
 * 'codechunk' in the filename means that it is a reconstructed dump from a loose executable region. This can be for example injected code that did not have a PE header. Codechunks will be dumped twice, once with a reconstructed x86 and again with a reconstructed x64 header.
 
@@ -133,11 +133,23 @@ Options:
 * -nt
 > Disable multithreading.
 
+* -nep
+> Disable entry point hashing.
+
+* -eprec
+> Force the entry point to be reconstructed, even if a valid one appears to exist.
+
 * -t \<thread count\>
 > Sets the number of threads to use (default 16).
 
-* -c \<filepath\>
+* -cdb \<filepath\>
 > Full filepath to the clean hash database to use for this run.
+
+* -edb \<filepath\>
+> Full filepath to the entrypoint hash database to use for this run.
+
+* -esdb \<filepath\>
+> Full filepath to the entrypoint short hash database to use for this run.
 
 * -db gen
 > Automatically processes a few common folders as well as

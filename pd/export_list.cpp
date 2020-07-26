@@ -123,7 +123,7 @@ unsigned __int64 export_list::find_export(char* library, char* name, bool is64)
 	for (unordered_map<unsigned __int64, export_entry*>::iterator it = _address_to_exports.begin(); it != _address_to_exports.end(); ++it)
 	{
 		//if( strcmp(it->second->library_name,"kernel32.dll") == 0 )
-		//	printf("%s::%s\r\n", it->second->library_name, it->second->name);
+		//	printf("%s::%s\n", it->second->library_name, it->second->name);
 		if (it->second->is64 == is64 && (library == NULL || strcmpi(library, it->second->library_name) == 0 ) && strcmpi(name, it->second->name) == 0)
 		{
 			// Found a match
@@ -201,7 +201,7 @@ bool export_list::add_exports(unsigned char* image, SIZE_T image_size, unsigned 
 		{
 			// Library name is invalid, no point in continuing to parse since we need this name to reconstruct any imports anyway
 			//throw std::invalid_argument( printf("Invalid library export directory module name. Unable to add exports to table for import reconstruction. Library base 0x%llX.", (unsigned long long int) image_base ) );
-			fprintf( stderr, "WARNING: Invalid library export directory module name. Unable to add exports to table for import reconstruction. Library base 0x%llX.\r\n",
+			fprintf( stderr, "WARNING: Invalid library export directory module name. Unable to add exports to table for import reconstruction. Library base 0x%llX.\n",
 											(unsigned long long int) image_base );
 			return false;
 		}
