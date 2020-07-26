@@ -110,5 +110,8 @@
     <ClInclude Include="work_queue.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="nmd_assembly.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

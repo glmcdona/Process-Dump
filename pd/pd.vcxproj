@@ -269,6 +269,7 @@
     <ClInclude Include="export_list.h" />
     <ClInclude Include="hash.h" />
     <ClInclude Include="module_list.h" />
+    <ClInclude Include="nmd_assembly.h" />
     <ClInclude Include="pd.h" />
     <ClInclude Include="pe_exports.h" />
     <ClInclude Include="pe_hash_database.h" />

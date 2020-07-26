@@ -123,11 +123,11 @@ bool terminate_monitor_hook::hook_terminate(export_list* exports)
 			{
 				if (_options->Verbose)
 				{
-					fprintf(stderr, "WARNING: Failed to find library exports used in hooking ZwTerminateProcess. PID: 0x%x, 64bit mode: %i\r\n", _pid, (int)_is64);
-					fprintf(stderr, "WARNING: ntdll.dll::NtTerminateProcess = 0x%llX\r\n", _address_terminate);
-					fprintf(stderr, "WARNING: kernel32.dll::GetCurrentThreadId = 0x%llX\r\n", address_getthreadid);
-					fprintf(stderr, "WARNING: kernel32.dll::GetCurrentThread = 0x%llX\r\n", address_getthread);
-					fprintf(stderr, "WARNING: kernel32.dll::SuspendThread = 0x%llX\r\n", address_suspendthread);
+					fprintf(stderr, "WARNING: Failed to find library exports used in hooking ZwTerminateProcess. PID: 0x%x, 64bit mode: %i\n", _pid, (int)_is64);
+					fprintf(stderr, "WARNING: ntdll.dll::NtTerminateProcess = 0x%llX\n", _address_terminate);
+					fprintf(stderr, "WARNING: kernel32.dll::GetCurrentThreadId = 0x%llX\n", address_getthreadid);
+					fprintf(stderr, "WARNING: kernel32.dll::GetCurrentThread = 0x%llX\n", address_getthread);
+					fprintf(stderr, "WARNING: kernel32.dll::SuspendThread = 0x%llX\n", address_suspendthread);
 				}
 			}
 			else

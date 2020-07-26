@@ -10,6 +10,8 @@ pe_header::pe_header( char* filename, PD_OPTIONS* options )
 	this->_stream = (stream_wrapper*) new file_stream( filename );
 	_original_base = 0;
 	_unique_hash = 0;
+	_unique_hash_ep = 0;
+	_unique_hash_ep_short = 0;
 
 	_name_filepath_long_size = 0;
 	_name_filepath_long = NULL;
@@ -41,7 +43,7 @@ pe_header::pe_header( char* filename, PD_OPTIONS* options )
 	}
 
 	if( _options->Verbose )
-		fprintf( stdout, "INFO: Initialized header for module name %s.\r\n", this->get_name() );
+		fprintf( stdout, "INFO: Initialized header for module name %s.\n", this->get_name() );
 }
 
 export_list* pe_header::get_exports()
@@ -60,6 +62,8 @@ pe_header::pe_header( DWORD pid, void* base, module_list* modules, PD_OPTIONS* o
 	this->_raw_header_size = 0;
 	this->_disk_image_size = 0;
 	_unique_hash = 0;
+	_unique_hash_ep = 0;
+	_unique_hash_ep_short = 0;
 
 	_header_export_directory = NULL;
 	_header_import_descriptors = NULL;
@@ -96,7 +100,7 @@ pe_header::pe_header( DWORD pid, void* base, module_list* modules, PD_OPTIONS* o
 	}
 
 	if( _options->Verbose )
-		fprintf( stdout, "INFO: Initialized header for module name %s.\r\n", this->get_name() );
+		fprintf( stdout, "INFO: Initialized header for module name %s.\n", this->get_name() );
 }
 
 pe_header::pe_header( DWORD pid, module_list* modules, PD_OPTIONS* options )
@@ -106,6 +110,8 @@ pe_header::pe_header( DWORD pid, module_list* modules, PD_OPTIONS* options )
 	this->_raw_header_size = 0;
 	this->_disk_image_size = 0;
 	_unique_hash = 0;
+	_unique_hash_ep = 0;
+	_unique_hash_ep_short = 0;
 
 	_header_export_directory = NULL;
 	_header_import_descriptors = NULL;
@@ -133,7 +139,7 @@ pe_header::pe_header( DWORD pid, module_list* modules, PD_OPTIONS* options )
 	_original_base = ((process_stream*) _stream)->base;
 
 	if( _options->Verbose )
-		fprintf( stdout, "INFO: Initialized header for module name %s.\r\n", this->get_name() );
+		fprintf( stdout, "INFO: Initialized header for module name %s.\n", this->get_name() );
 }
 
 pe_header::pe_header( HANDLE ph, void* base, module_list* modules, PD_OPTIONS* options )
@@ -143,6 +149,8 @@ pe_header::pe_header( HANDLE ph, void* base, module_list* modules, PD_OPTIONS* o
 	this->_raw_header_size = 0;
 	this->_disk_image_size = 0;
 	_unique_hash = 0;
+	_unique_hash_ep = 0;
+	_unique_hash_ep_short = 0;
 
 	_name_filepath_long_size = 0;
 	_name_filepath_long = NULL;
@@ -168,7 +176,7 @@ pe_header::pe_header( HANDLE ph, void* base, module_list* modules, PD_OPTIONS* o
 	_original_base = base;
 
 	if( _options->Verbose )
-		fprintf( stdout, "INFO: Initialized header for module name %s.\r\n", this->get_name() );
+		fprintf( stdout, "INFO: Initialized header for module name %s.\n", this->get_name() );
 }
 
 void pe_header::print_report(FILE* stream)
@@ -347,9 +355,181 @@ bool pe_header::process_hash( )
 	}
 
 	return false;
-	
-	return true;
 }
+
+unsigned __int64 pe_header::_hash_short_asm(SIZE_T offset)
+{
+	unsigned __int64 result = 0;
+
+	if (offset == 0 || !_options->EntryPointHash)
+	{
+		// Invalid entry point for hashing or code hashing is disabled
+		return result;
+	}
+
+	// Load the 8 bytes at the offset as the short hash
+	if (_test_read(_image, _image_size, _image + offset, 8))
+	{
+		result = *((unsigned __int64*)(_image + offset));
+
+		// Require at least 2 different byte values to be valid
+		if ( ((result ^ (result << 8)) & 0xffffffffffffff00) == 0)
+		{
+			// All the same bytes, so it isn't valid
+			return 0;
+		}
+	}
+
+	return result;
+}
+
+unsigned __int64 pe_header::_hash_asm(SIZE_T offset)
+{
+	// Calculate the entry-point hash given the specified entry point
+	unsigned __int64 result = 0;
+
+	if (offset == 0 || !_options->EntryPointHash)
+	{
+		// Invalid entry point for hashing or code hashing is disabled
+		return result;
+	}
+	
+	if (this->_parsed_pe_32 || this->_parsed_pe_64)
+	{
+		// Partial hash of the code at the entry point. A database of these hashes for known modules can be
+		// used to attempt to recover the original entry-point of dumped modules with tampered entry points.
+
+		// First load the disassembly mode
+		NMD_X86_MODE mode;
+		if (_parsed_pe_32)
+		{
+			mode = NMD_X86_MODE_32;
+		}
+		else
+		{
+			mode = NMD_X86_MODE_64;
+		}
+
+		// Hashing logic:
+		//  Hash opcodes + prefix
+		//  Hash the first 100 instructions or until a ret is hit. If a ret is hit before 30 instructions are processed,
+		//	it will continue blindly processing until 30 instructions are processed.
+
+		bool more;
+		bool return_hit = false;
+		NMD_X86Instruction inst;
+		int inst_count = 0;
+		do
+		{
+			more = false;
+			if (_test_read(_image, _image_size, _image + offset, 20))
+			{
+				// Disassemble
+				more = true;
+				if (nmd_x86_decode_buffer(_image + offset, 20, &inst, mode, NMD_X86_DECODER_FLAGS_MINIMAL))
+				{
+					// Hash in this opcode
+					result = (result + inst.opcode + (inst.opcode << 8) + (inst.opcode << 16) + (inst.opcode << 24)) ^ 0x8ADFA91F8ADFA91F;
+					result = _rotl64(result, 0x13);
+
+					// Hash in the opcode prefix
+					result = (result + inst.prefixes + (inst.prefixes << 16)) ^ 0x18F31A228FA9B17A;
+					result = _rotl64(result, 0x17);
+
+					// Check if it was a function return
+					if (inst.group == NMD_GROUP_RET)
+					{
+						return_hit = true;
+					}
+
+					offset += inst.length;
+				}
+				else
+				{
+					// Failed to disassemble. Hash this information and skip to the next byte.
+					result = result ^ 0xCDA13B89DB31AF13;
+					result = _rotl64(result, 0x18);
+
+					offset++;
+				}
+
+				inst_count++;
+			}
+
+			if (more)
+			{
+				if (return_hit && inst_count >= EP_HASH_OPCODES_MIN)
+				{
+					// End if we've hit a return instruction and we've finished hashing at least 30 instructions
+					more = false;
+				}
+
+				if (inst_count >= EP_HASH_OPCODES_MAX)
+				{
+					// We hash at most 100 instructions
+					more = false;
+				}
+			}
+		} while (more);
+
+		if (inst_count >= EP_HASH_OPCODES_MIN)
+		{
+			return result;
+		}
+	}
+	
+	return 0; // Not a valid hash
+
+}
+
+bool pe_header::process_hash_ep()
+{
+	// Build the hash the entry point code
+	this->_unique_hash_ep = 0;
+	this->_unique_hash_ep_short = 0;
+	
+	// Calculate the entry-point hash given the specified entry point
+	unsigned __int64 result = 0;
+
+	if (this->_parsed_pe_32 || this->_parsed_pe_64)
+	{
+		// Partial hash of the code at the entry point. A database of these hashes for known modules can be
+		// used to attempt to recover the original entry-point of dumped modules with tampered entry points.
+
+		// First load the entry point
+		SIZE_T offset = 0;
+		NMD_X86_MODE mode;
+		if (_parsed_pe_32)
+		{
+			offset = _header_pe32->OptionalHeader.AddressOfEntryPoint; // rva
+		}
+		else
+		{
+			offset = _header_pe64->OptionalHeader.AddressOfEntryPoint;
+		}
+
+		// Load the 8 bytes at the entrypoint as the short hash
+		unsigned __int64 hash = _hash_short_asm(offset);
+		if (hash != 0)
+		{
+			_unique_hash_ep_short = hash;
+
+			// Load the hash of the code at the entry point
+			hash = _hash_asm(offset);
+			if (hash != 0)
+			{
+				this->_unique_hash_ep = hash;
+				return true;
+			}
+		}
+
+		
+	}
+
+	// Failed to parse an entry point hash
+	return false;
+}
+
 
 bool pe_header::write_image( char* filename )
 {
@@ -384,7 +564,7 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 	unordered_set<unsigned __int64> import_addresses;
 
 	if( _options->Verbose )
-			printf( "INFO: Building import information.\r\n" );
+			printf( "INFO: Building import information.\n" );
 	
 	IMPORT_SUMMARY result;
 	result.COUNT_UNIQUE_IMPORT_ADDRESSES = 0;
@@ -483,11 +663,11 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 
 	if( _options->Verbose )
 	{
-		printf( "INFO: Finished building import information:\r\n" );
-		printf( "INFO: Count Unique Import Addresses = %i\r\n", result.COUNT_UNIQUE_IMPORT_ADDRESSES );
-		printf( "INFO: Count Unique Import Libraries = %i\r\n", result.COUNT_UNIQUE_IMPORT_LIBRARIES );
-		printf( "INFO: Generic Hash = 0x%llX\r\n", result.HASH_GENERIC );
-		printf( "INFO: Specific Hash = 0x%llX\r\n", result.HASH_SPECIFIC );
+		printf( "INFO: Finished building import information:\n" );
+		printf( "INFO: Count Unique Import Addresses = %i\n", result.COUNT_UNIQUE_IMPORT_ADDRESSES );
+		printf( "INFO: Count Unique Import Libraries = %i\n", result.COUNT_UNIQUE_IMPORT_LIBRARIES );
+		printf( "INFO: Generic Hash = 0x%llX\n", result.HASH_GENERIC );
+		printf( "INFO: Specific Hash = 0x%llX\n", result.HASH_SPECIFIC );
 	}
 
 	return result;
@@ -495,11 +675,25 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 
 unsigned __int64 pe_header::get_hash()
 {
-	//return rand() + (rand() << 32);
 	if( _unique_hash == 0 )
 		process_hash();
 	return _unique_hash;
 }
+
+unsigned __int64 pe_header::get_hash_ep()
+{
+	if (_unique_hash_ep == 0)
+		process_hash_ep();
+	return _unique_hash_ep;
+}
+
+unsigned __int64 pe_header::get_hash_ep_short()
+{
+	if (_unique_hash_ep_short == 0)
+		process_hash_ep();
+	return _unique_hash_ep_short;
+}
+
 
 bool pe_header::build_pe_header( __int64 size, bool amd64 )
 {
@@ -664,7 +858,7 @@ bool pe_header::build_pe_header( __int64 size, bool amd64, int num_sections_limi
 			_header_sections[_num_sections].PointerToLinenumbers = 0;
 			
 			if( _options->Verbose )
-				printf("%s: size %x\r\n", name, image_size);
+				printf("%s: size %x\n", name, image_size);
 
 			_num_sections++;
 			image_size += est_size;
@@ -690,7 +884,7 @@ bool pe_header::build_pe_header( __int64 size, bool amd64, int num_sections_limi
 bool pe_header::process_pe_header( )
 {
 	if( _options->Verbose )
-		fprintf( stdout, "INFO: Loading PE header for %s.\r\n", this->get_name() );
+		fprintf( stdout, "INFO: Loading PE header for %s.\n", this->get_name() );
 
 	if( _stream != NULL )
 	{
@@ -726,7 +920,7 @@ bool pe_header::process_pe_header( )
 								this->_header_pe32 = ((IMAGE_NT_HEADERS32*) base_pe);
 								this->_parsed_pe_32 = true;
 								if( _options->Verbose )
-									fprintf( stdout, "INFO: Loaded PE header for %s. Somewhat parsed: %d\r\n", this->get_name(), this->somewhat_parsed() );
+									fprintf( stdout, "INFO: Loaded PE header for %s. Somewhat parsed: %d\n", this->get_name(), this->somewhat_parsed() );
 								return true;
 							}
 							else if( ((IMAGE_NT_HEADERS64*)base_pe)->Signature == 0x4550 && ((IMAGE_NT_HEADERS64*)base_pe)->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC )
@@ -735,14 +929,14 @@ bool pe_header::process_pe_header( )
 								this->_header_pe64 = ((IMAGE_NT_HEADERS64*) base_pe);
 								this->_parsed_pe_64 = true;
 								if( _options->Verbose )
-									fprintf( stdout, "INFO: Loaded PE header for %s. Somewhat parsed: %d\r\n", this->get_name(), this->somewhat_parsed() );
+									fprintf( stdout, "INFO: Loaded PE header for %s. Somewhat parsed: %d\n", this->get_name(), this->somewhat_parsed() );
 								return true;
 							}
 							else
 							{
 								// error
 								if (_options->Verbose)
-									fprintf(stdout, "INFO: Invalid PE header for %s. Somewhat parsed: %d\r\n", this->get_name(), this->somewhat_parsed());
+									fprintf(stdout, "INFO: Invalid PE header for %s. Somewhat parsed: %d\n", this->get_name(), this->somewhat_parsed());
 							}
 						}
 					}
@@ -753,11 +947,11 @@ bool pe_header::process_pe_header( )
 	else
 	{
 		if( _options->Verbose )
-			fprintf( stderr, "INFO: Invalid stream.\r\n" );
+			fprintf( stderr, "INFO: Invalid stream.\n" );
 	}
 	
 	if( _options->Verbose )
-		fprintf( stdout, "INFO: Loaded PE header for %s. Somewhat parsed: %d\r\n", this->get_name(), this->somewhat_parsed() );
+		fprintf( stdout, "INFO: Loaded PE header for %s. Somewhat parsed: %d\n", this->get_name(), this->somewhat_parsed() );
 
 	return false;
 }
@@ -765,7 +959,7 @@ bool pe_header::process_pe_header( )
 bool pe_header::process_sections( )
 {
 	if( _options->Verbose )
-		fprintf( stdout, "INFO: Loading sections for %s.\r\n", this->get_name() );
+		fprintf( stdout, "INFO: Loading sections for %s.\n", this->get_name() );
 
 	if( this->_parsed_pe_32 )
 	{
@@ -776,7 +970,7 @@ bool pe_header::process_sections( )
 		{
 			char* location = new char[FILEPATH_SIZE + 1];
 			_stream->get_location(location, FILEPATH_SIZE + 1);
-			fprintf( stderr, "WARNING: module '%s' at %s. Extremely large number of sections of 0x%x changed to 0x100 as part of sanity check.\r\n",
+			fprintf( stderr, "WARNING: module '%s' at %s. Extremely large number of sections of 0x%x changed to 0x100 as part of sanity check.\n",
 				this->get_name(), location, _header_pe32->FileHeader.NumberOfSections );
 			_header_pe32->FileHeader.NumberOfSections = 0x100;
 			delete[] location;
@@ -791,7 +985,7 @@ bool pe_header::process_sections( )
 				// Parse the maximum number of sections possible
 				char* location = new char[FILEPATH_SIZE + 1];
 				_stream->get_location(location, FILEPATH_SIZE + 1);
-				fprintf( stderr, "WARNING: module '%s' at %s. Number of sections being changed from 0x%x to 0x%x such that it will fit within the PE header buffer.\r\n",
+				fprintf( stderr, "WARNING: module '%s' at %s. Number of sections being changed from 0x%x to 0x%x such that it will fit within the PE header buffer.\n",
 					this->get_name(), location,
 					_header_pe32->FileHeader.NumberOfSections,
 					( (_raw_header + _raw_header_size - base_sections - 1) / sizeof(IMAGE_SECTION_HEADER) )
@@ -809,9 +1003,9 @@ bool pe_header::process_sections( )
 				for( int i = 0; i < this->_num_sections; i++ )
 				{
 					if( _test_read( _raw_header, _raw_header_size, this->_header_sections[i].Name, 0x40 ) )
-						fprintf( stdout, "INFO: %s\t#%i\t%s\t0x%x\t0x%x\r\n", this->get_name(), i, this->_header_sections[i].Name, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
+						fprintf( stdout, "INFO: %s\t#%i\t%s\t0x%x\t0x%x\n", this->get_name(), i, this->_header_sections[i].Name, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
 					else
-						fprintf( stdout, "INFO: %s\t#%i\tINVALID ADDRESS\t0x%x\t0x%x\r\n", this->get_name(), i, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
+						fprintf( stdout, "INFO: %s\t#%i\tINVALID ADDRESS\t0x%x\t0x%x\n", this->get_name(), i, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
 				}
 			}
 
@@ -829,7 +1023,7 @@ bool pe_header::process_sections( )
 						// Use the _header_pe32->OptionalHeader.SizeOfImage, since it seems valid
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Image size of last section appears incorrect, using image size specified by optional header instead since it appears valid. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Image size of last section appears incorrect, using image size specified by optional header instead since it appears valid. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 								this->get_name(), location);
 						delete[] location;
 						image_size = _header_pe32->OptionalHeader.SizeOfImage;
@@ -839,7 +1033,7 @@ bool pe_header::process_sections( )
 						// Assume a really large last section since _header_pe32->OptionalHeader.SizeOfImage appears invalid. 
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Image size of last section appears incorrect, using built-in max section size of 0x%x instead. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Image size of last section appears incorrect, using built-in max section size of 0x%x instead. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 							this->get_name(), location,
 							MAX_SECTION_SIZE * (_num_sections+1));
 						delete[] location;
@@ -858,7 +1052,7 @@ bool pe_header::process_sections( )
 			{
 				char* location = new char[FILEPATH_SIZE + 1];
 				_stream->get_location(location, FILEPATH_SIZE + 1);
-				fprintf( stderr, "WARNING: module '%s' at %s. Large image size of 0x%x changed to 0x%x as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+				fprintf( stderr, "WARNING: module '%s' at %s. Large image size of 0x%x changed to 0x%x as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 					this->get_name(), location,
 					image_size, MAX_SECTION_SIZE * (_num_sections+1) );
 				delete[] location;
@@ -884,7 +1078,7 @@ bool pe_header::process_sections( )
 					{
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in header of size 0x%x. Was only able to read 0x%x bytes from this region.\r\n",this->get_name(), location, _header_pe32->OptionalHeader.SizeOfHeaders, num_read);
+						fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in header of size 0x%x. Was only able to read 0x%x bytes from this region.\n",this->get_name(), location, _header_pe32->OptionalHeader.SizeOfHeaders, num_read);
 						delete[] location;
 					}
 				}
@@ -913,7 +1107,7 @@ bool pe_header::process_sections( )
 							{
 								char* location = new char[FILEPATH_SIZE + 1];
 								_stream->get_location(location, FILEPATH_SIZE + 1);
-								fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in section %i of size 0x%x. Was only able to read 0x%x bytes from this region.\r\n", this->get_name(), location, i, this->_header_sections[i].SizeOfRawData, num_read);
+								fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in section %i of size 0x%x. Was only able to read 0x%x bytes from this region.\n", this->get_name(), location, i, this->_header_sections[i].SizeOfRawData, num_read);
 								delete[] location;
 							}
 						}
@@ -928,14 +1122,14 @@ bool pe_header::process_sections( )
 				{
 					char* location = new char[FILEPATH_SIZE + 1];
 					_stream->get_location(location, FILEPATH_SIZE + 1);
-					fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in image at 0x%llX of size 0x%x. Was only able to read 0x%x bytes from this region.\r\n",this->get_name(), location, this->_stream->get_address(), _image_size, num_read);
+					fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in image at 0x%llX of size 0x%x. Was only able to read 0x%x bytes from this region.\n",this->get_name(), location, this->_stream->get_address(), _image_size, num_read);
 					delete[] location;
 				}
 			}
 
 			if( _options->Verbose )
-				fprintf( stdout, "INFO: Loaded sections for %s with result: %d. %i sections found.\r\n", this->get_name(), this->_parsed_sections, ( this->_parsed_sections ? this->_num_sections : 0 )  );
-
+				fprintf( stdout, "INFO: Loaded sections for %s with result: %d. %i sections found.\n", this->get_name(), this->_parsed_sections, ( this->_parsed_sections ? this->_num_sections : 0 )  );
+			
 			return true;
 		}
 	}
@@ -948,7 +1142,7 @@ bool pe_header::process_sections( )
 		{
 			char* location = new char[FILEPATH_SIZE + 1];
 			_stream->get_location(location, FILEPATH_SIZE + 1);
-			fprintf( stderr, "WARNING: module '%s' at %s. Extremely large number of sections of 0x%x changed to 0x100 as part of sanity check.\r\n",
+			fprintf( stderr, "WARNING: module '%s' at %s. Extremely large number of sections of 0x%x changed to 0x100 as part of sanity check.\n",
 				this->get_name(), location, _header_pe64->FileHeader.NumberOfSections );
 			_header_pe64->FileHeader.NumberOfSections = 0x100;
 			delete[] location;
@@ -963,7 +1157,7 @@ bool pe_header::process_sections( )
 				// Parse the maximum number of sections possible
 				char* location = new char[FILEPATH_SIZE + 1];
 				_stream->get_location(location, FILEPATH_SIZE + 1);
-				fprintf( stderr, "WARNING: module '%s' at %s. Number of sections being changed from 0x%x to 0x%x such that it will fit within the PE header buffer.\r\n",
+				fprintf( stderr, "WARNING: module '%s' at %s. Number of sections being changed from 0x%x to 0x%x such that it will fit within the PE header buffer.\n",
 					this->get_name(), location,
 					_header_pe64->FileHeader.NumberOfSections,
 					( (_raw_header + _raw_header_size - base_sections - 1) / sizeof(IMAGE_SECTION_HEADER) )
@@ -980,7 +1174,7 @@ bool pe_header::process_sections( )
 			{
 				for( int i = 0; i < this->_num_sections; i++ )
 				{
-					fprintf( stdout, "INFO: %s\t#%i\t%s\t0x%x\t0x%x\r\n", this->get_name(), i, this->_header_sections[i].Name, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
+					fprintf( stdout, "INFO: %s\t#%i\t%s\t0x%x\t0x%x\n", this->get_name(), i, this->_header_sections[i].Name, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
 				}
 			}
 
@@ -997,7 +1191,7 @@ bool pe_header::process_sections( )
 						// Use the _header_pe64->OptionalHeader.SizeOfImage, since it seems valid
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Image size of last section appears incorrect, using image size specified by optional header instead since it appears valid. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Image size of last section appears incorrect, using image size specified by optional header instead since it appears valid. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 								this->get_name(), location);
 						delete[] location;
 						image_size = _header_pe64->OptionalHeader.SizeOfImage;
@@ -1007,7 +1201,7 @@ bool pe_header::process_sections( )
 						// Assume a really large last section since _header_pe64->OptionalHeader.SizeOfImage appears invalid. 
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Image size of last section appears incorrect, using built-in max section size of 0x%x instead. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Image size of last section appears incorrect, using built-in max section size of 0x%x instead. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 							this->get_name(), location,
 							MAX_SECTION_SIZE * (_num_sections+1));
 						delete[] location;
@@ -1026,7 +1220,7 @@ bool pe_header::process_sections( )
 			{
 				char* location = new char[FILEPATH_SIZE + 1];
 				_stream->get_location(location, FILEPATH_SIZE + 1);
-				fprintf( stderr, "WARNING: module '%s' at %s. Large image size of 0x%x changed to 0x%x as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+				fprintf( stderr, "WARNING: module '%s' at %s. Large image size of 0x%x changed to 0x%x as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 					this->get_name(), location,
 					image_size, MAX_SECTION_SIZE * (_num_sections+1) );
 				delete[] location;
@@ -1052,7 +1246,7 @@ bool pe_header::process_sections( )
 					{
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in header of size 0x%x. Was only able to read 0x%x bytes from this region.\r\n",this->get_name(), location, _header_pe64->OptionalHeader.SizeOfHeaders, num_read);
+						fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in header of size 0x%x. Was only able to read 0x%x bytes from this region.\n",this->get_name(), location, _header_pe64->OptionalHeader.SizeOfHeaders, num_read);
 						delete[] location;
 					}
 				}
@@ -1081,7 +1275,7 @@ bool pe_header::process_sections( )
 							{
 								char* location = new char[FILEPATH_SIZE + 1];
 								_stream->get_location(location, FILEPATH_SIZE + 1);
-								fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in section %i of size 0x%x. Was only able to read 0x%x bytes from this region.\r\n", this->get_name(), location, i, this->_header_sections[i].SizeOfRawData, num_read);
+								fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in section %i of size 0x%x. Was only able to read 0x%x bytes from this region.\n", this->get_name(), location, i, this->_header_sections[i].SizeOfRawData, num_read);
 								delete[] location;
 							}
 						}
@@ -1096,30 +1290,77 @@ bool pe_header::process_sections( )
 				{
 					char* location = new char[FILEPATH_SIZE + 1];
 					_stream->get_location(location, FILEPATH_SIZE + 1);
-					fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in image at 0x%llX of size 0x%x. Was only able to read 0x%x bytes from this region.\r\n",this->get_name(), location, this->_stream->get_address(), _image_size, num_read);
+					fprintf( stderr, "WARNING: module '%s' at %s. Failed to read in image at 0x%llX of size 0x%x. Was only able to read 0x%x bytes from this region.\n",this->get_name(), location, this->_stream->get_address(), _image_size, num_read);
 					delete[] location;
 				}
 			}
 
 			if( _options->Verbose )
-				fprintf( stdout, "INFO: Loaded sections for %s with result: %d. %i sections found.\r\n", this->get_name(), this->_parsed_sections, ( this->_parsed_sections ? this->_num_sections : 0 )  );
+				fprintf( stdout, "INFO: Loaded sections for %s with result: %d. %i sections found.\n", this->get_name(), this->_parsed_sections, ( this->_parsed_sections ? this->_num_sections : 0 )  );
 
 			return true;
 		}
 	}
 
 	if( _options->Verbose )
-		fprintf( stdout, "INFO: Failed to load sections for %s.\r\n", this->get_name() );
+		fprintf( stdout, "INFO: Failed to load sections for %s.\n", this->get_name() );
 
 	return false;
 }
 
-bool pe_header::process_disk_image( export_list* exports )
+bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash_database)
 {
 	if( this->_parsed_sections )
 	{
 		if( this->_parsed_pe_32 )
 		{
+			// Re-build the Original Entry Point OEP if it looks to be not valid
+			if (_header_pe32->OptionalHeader.AddressOfEntryPoint == 0 ||
+				_header_pe32->OptionalHeader.AddressOfEntryPoint == 0x2000 ||
+				!_test_read(_image, _image_size, _image + _header_pe32->OptionalHeader.AddressOfEntryPoint, 20) ||
+				_options->ForceReconstructEntryPoint)
+			{
+				printf("INFO: Re-building entrypoint. Original entrypoint invalid: %x\n", _header_pe32->OptionalHeader.AddressOfEntryPoint);
+
+				// The entry-point looks invalid, search for candidates to reconstruct it
+				unsigned __int64 best_entrypoint = 0;
+
+				for (__int64 offset = 0x1000; offset < _image_size - 8; offset += 1)
+				{
+					// Check if this is a possible entrypoint
+					unsigned __int64 cand = *((__int64*)(_image + offset));
+
+					// Lookup the address
+					if (hash_database->contains_epshort(cand))
+					{
+						// This is a possible entrypoint, this is a weak correlation but we'll use it if it's all we have
+						if (best_entrypoint == 0)
+						{
+							best_entrypoint = offset;
+						}
+						if( _options->Verbose )
+							printf("INFO: Possible entrypoint found (weak): %x\n", offset);
+
+						// Validate that the full hash matches a known entrypoint
+						cand = _hash_asm(offset);
+						if (hash_database->contains_ep(cand))
+						{
+							best_entrypoint = offset;
+							printf("INFO: Possible entrypoint found (strong): %x\n", offset);
+							if (!_options->Verbose)
+								break;
+						}
+					}
+				}
+
+				// Update the entrypoint
+				if (best_entrypoint != 0)
+				{
+					_header_pe32->OptionalHeader.AddressOfEntryPoint = best_entrypoint;
+					printf("INFO: Updated entrypoint to: %x\n", best_entrypoint);
+				}
+			}
+
 			// Reconstruct PE imports aggressively using our knowledge of all the exports addresses in this process
 			// Technique:
 			//   1. 'exports' defines all valid export addresses in this process
@@ -1159,7 +1400,7 @@ bool pe_header::process_disk_image( export_list* exports )
 					}
 				}
 				if( _options->Verbose )
-					printf( "INFO: Reconstructing %i imports.\r\n", count );
+					printf( "INFO: Reconstructing %i imports.\n", count );
 				
 				// Increase the image size for a new section
 				__int64 descriptor_size = 0;
@@ -1178,13 +1419,13 @@ bool pe_header::process_disk_image( export_list* exports )
 				memcpy(larger_image, _image, _image_size);
 
 				if( _options->Verbose )
-					printf( "INFO: Writing added import table.\r\n" );
+					printf( "INFO: Writing added import table.\n" );
 				
 				// Write to the new section
 				peimp->build_table( larger_image + this->_section_align((long long) _image_size, this->_header_pe32->OptionalHeader.SectionAlignment), new_section_size, (__int64) _image_size, (__int64) 0, descriptor_size );
 				
 				if( _options->Verbose )
-					printf( "INFO: Updating import data directory.\r\n" );
+					printf( "INFO: Updating import data directory.\n" );
 
 				// Update the PE header to refer to it
 				_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = this->_section_align((long long) _image_size, this->_header_pe32->OptionalHeader.SectionAlignment);
@@ -1208,7 +1449,7 @@ bool pe_header::process_disk_image( export_list* exports )
 
 			// Change the physical alignment to use the virtual alignment
 			if( _options->Verbose )
-					printf( "INFO: Adjusting file alignment to %x.\r\n", _header_pe32->OptionalHeader.SectionAlignment);
+					printf( "INFO: Adjusting file alignment to %x.\n", _header_pe32->OptionalHeader.SectionAlignment);
 			_header_pe32->OptionalHeader.FileAlignment = _header_pe32->OptionalHeader.SectionAlignment;
 			
 			// Adjust the physical size of each section to use the virtual size
@@ -1221,7 +1462,7 @@ bool pe_header::process_disk_image( export_list* exports )
 				if( this->_header_sections[i].Misc.VirtualSize > MAX_SECTION_SIZE  )
 				{
 					if( _options->Verbose )
-						printf( "INFO: Calculating required space for section %i.\r\n", i);
+						printf( "INFO: Calculating required space for section %i.\n", i);
 
 					if( i + 1 < _num_sections &&
 						this->_header_sections[i+1].VirtualAddress > this->_header_sections[i].VirtualAddress &&
@@ -1230,7 +1471,7 @@ bool pe_header::process_disk_image( export_list* exports )
 						// Calculate the virtual size manually
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on image size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on image size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 							this->get_name(), location, i, this->_header_sections[i].Misc.VirtualSize, this->_header_sections[i+1].VirtualAddress - this->_header_sections[i].VirtualAddress );
 						delete[] location;
 						this->_header_sections[i].Misc.VirtualSize = this->_header_sections[i+1].VirtualAddress - this->_header_sections[i].VirtualAddress;
@@ -1240,7 +1481,7 @@ bool pe_header::process_disk_image( export_list* exports )
 						// Use MAX_SECTION_SIZE
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on maximum section size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on maximum section size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 							this->get_name(), location, i, this->_header_sections[i].Misc.VirtualSize, MAX_SECTION_SIZE );
 						delete[] location;
 						this->_header_sections[i].Misc.VirtualSize = MAX_SECTION_SIZE;
@@ -1253,7 +1494,7 @@ bool pe_header::process_disk_image( export_list* exports )
 					char* location = new char[FILEPATH_SIZE + 1];
 					_stream->get_location(location, FILEPATH_SIZE + 1);
 					DWORD new_size = larger_image_size - this->_header_sections[i].VirtualAddress;
-					fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x being truncated to 0x%x to fit within the image size. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+					fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x being truncated to 0x%x to fit within the image size. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 						this->get_name(), location, i, this->_header_sections[i].Misc.VirtualSize, new_size );
 					delete[] location;
 					this->_header_sections[i].Misc.VirtualSize = new_size;
@@ -1275,7 +1516,7 @@ bool pe_header::process_disk_image( export_list* exports )
 			_header_pe32->OptionalHeader.SizeOfImage = required_space;
 			
 			if( _options->Verbose )
-						printf( "INFO: Copying the corrected memory PE header into file PE header format.\r\n");
+						printf( "INFO: Copying the corrected memory PE header into file PE header format.\n");
 
 			// Copy over the modified PE header into the imaged version
 			if( _test_read( larger_image, larger_image_size, larger_image, _header_pe32->OptionalHeader.SizeOfHeaders ) &&
@@ -1293,7 +1534,7 @@ bool pe_header::process_disk_image( export_list* exports )
 			{
 				// Pack it down into a disk image of the file
 				if( _options->Verbose )
-						printf( "INFO: Packing down memory sections into the file.\r\n");
+						printf( "INFO: Packing down memory sections into the file.\n");
 
 				// Allocate the necessary space for the physical image and initialize it to zero
 				_disk_image_size = required_space;
@@ -1313,7 +1554,7 @@ bool pe_header::process_disk_image( export_list* exports )
 					for( int i = 0; i < _num_sections; i++ )
 					{
 						if( _options->Verbose )
-							printf( "INFO: Packing down section %i.\r\n", i);
+							printf( "INFO: Packing down section %i.\n", i);
 
 						// Copy this section if the source and destination are both within acceptable bounds
 						if( _test_read( _disk_image, _disk_image_size,
@@ -1328,7 +1569,7 @@ bool pe_header::process_disk_image( export_list* exports )
 
 				delete [] larger_image;
 				if( _options->Verbose )
-					printf( "INFO: Done processing disk image.\r\n");
+					printf( "INFO: Done processing disk image.\n");
 
 				return true;
 			}
@@ -1336,6 +1577,53 @@ bool pe_header::process_disk_image( export_list* exports )
 		}
 		else if( this->_parsed_pe_64 )
 		{
+			// Re-build the Original Entry Point OEP if it looks to be not valid
+			if (_header_pe64->OptionalHeader.AddressOfEntryPoint == 0 ||
+				_header_pe64->OptionalHeader.AddressOfEntryPoint == 0x2000 ||
+				!_test_read(_image, _image_size, _image + _header_pe64->OptionalHeader.AddressOfEntryPoint, 20) ||
+				_options->ForceReconstructEntryPoint)
+			{
+				printf("INFO: Re-building entrypoint. Original entrypoint invalid: %x\n", _header_pe64->OptionalHeader.AddressOfEntryPoint);
+
+				// The entry-point looks invalid, search for candidates to reconstruct it
+				unsigned __int64 best_entrypoint = 0;
+
+				for (__int64 offset = 0x1000; offset < _image_size - 8; offset += 1)
+				{
+					// Check if this is a possible entrypoint
+					unsigned __int64 cand = *((__int64*)(_image + offset));
+
+					// Lookup the address
+					if (hash_database->contains_epshort(cand))
+					{
+						// This is a possible entrypoint, this is a weak correlation but we'll use it if it's all we have
+						if (best_entrypoint == 0)
+						{
+							best_entrypoint = offset;
+						}
+						if (_options->Verbose)
+							printf("INFO: Possible entrypoint found (weak): %x\n", offset);
+
+						// Validate that the full hash matches a known entrypoint
+						cand = _hash_asm(offset);
+						if (hash_database->contains_ep(cand))
+						{
+							best_entrypoint = offset;
+							printf("INFO: Possible entrypoint found (strong): %x\n", offset);
+							if (!_options->Verbose)
+								break;
+						}
+					}
+				}
+
+				// Update the entrypoint
+				if (best_entrypoint != 0)
+				{
+					_header_pe64->OptionalHeader.AddressOfEntryPoint = best_entrypoint;
+					printf("INFO: Updated entrypoint to: %x\n", best_entrypoint);
+				}
+			}
+
 			// Reconstruct PE imports aggressively using our knowledge of all the exports addresses in this process
 			// Technique:
 			//   1. 'exports' defines all valid export addresses in this process
@@ -1375,7 +1663,7 @@ bool pe_header::process_disk_image( export_list* exports )
 					}
 				}
 				if( _options->Verbose )
-					printf( "INFO: Reconstructing %i imports.\r\n", count );
+					printf( "INFO: Reconstructing %i imports.\n", count );
 				
 				// Increase the image size for a new section
 				__int64 descriptor_size = 0;
@@ -1395,13 +1683,13 @@ bool pe_header::process_disk_image( export_list* exports )
 				memcpy(larger_image, _image, _image_size);
 
 				if( _options->Verbose )
-					printf( "INFO: Writing added import table.\r\n" );
+					printf( "INFO: Writing added import table.\n" );
 				
 				// Write to the new section
 				peimp->build_table( larger_image + this->_section_align((long long) this->_image_size, this->_header_pe64->OptionalHeader.SectionAlignment), new_section_size, (__int64) _image_size, (__int64) 0, descriptor_size );
 				
 				if( _options->Verbose )
-					printf( "INFO: Updating import data directory.\r\n" );
+					printf( "INFO: Updating import data directory.\n" );
 
 				// Update the PE header to refer to it
 				_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = this->_section_align((long long) this->_image_size, this->_header_pe64->OptionalHeader.SectionAlignment);
@@ -1427,7 +1715,7 @@ bool pe_header::process_disk_image( export_list* exports )
 
 			// Change the physical alignment to use the virtual alignment
 			if( _options->Verbose )
-					printf( "INFO: Adjusting file alignment to %x.\r\n", _header_pe64->OptionalHeader.SectionAlignment);
+					printf( "INFO: Adjusting file alignment to %x.\n", _header_pe64->OptionalHeader.SectionAlignment);
 			_header_pe64->OptionalHeader.FileAlignment = _header_pe64->OptionalHeader.SectionAlignment;
 			
 			// Adjust the physical size of each section to use the virtual size
@@ -1440,7 +1728,7 @@ bool pe_header::process_disk_image( export_list* exports )
 				if( this->_header_sections[i].Misc.VirtualSize > MAX_SECTION_SIZE  )
 				{
 					if( _options->Verbose )
-						printf( "INFO: Calculating required space for section %i.\r\n", i);
+						printf( "INFO: Calculating required space for section %i.\n", i);
 
 					if( i + 1 < _num_sections &&
 						this->_header_sections[i+1].VirtualAddress > this->_header_sections[i].VirtualAddress &&
@@ -1449,7 +1737,7 @@ bool pe_header::process_disk_image( export_list* exports )
 						// Calculate the virtual size manually
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on image virtual size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on image virtual size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 							this->get_name(), location, i, this->_header_sections[i].Misc.VirtualSize, this->_header_sections[i+1].VirtualAddress - this->_header_sections[i].VirtualAddress );
 						delete[] location;
 						this->_header_sections[i].Misc.VirtualSize = this->_header_sections[i+1].VirtualAddress - this->_header_sections[i].VirtualAddress;
@@ -1459,7 +1747,7 @@ bool pe_header::process_disk_image( export_list* exports )
 						// Use MAX_SECTION_SIZE
 						char* location = new char[FILEPATH_SIZE + 1];
 						_stream->get_location(location, FILEPATH_SIZE + 1);
-						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on maximum section size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+						fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x changed to 0x%x based on maximum section size as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 							this->get_name(), location, i, this->_header_sections[i].Misc.VirtualSize, MAX_SECTION_SIZE );
 						delete[] location;
 						this->_header_sections[i].Misc.VirtualSize = MAX_SECTION_SIZE;
@@ -1472,7 +1760,7 @@ bool pe_header::process_disk_image( export_list* exports )
 					char* location = new char[FILEPATH_SIZE + 1];
 					_stream->get_location(location, FILEPATH_SIZE + 1);
 					DWORD new_size = larger_image_size - this->_header_sections[i].VirtualAddress;
-					fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x being truncated to 0x%x to fit within the image size. This could be as a result of a custom code to load a library by means other than LoadLibrary().\r\n",
+					fprintf( stderr, "WARNING: module '%s' at %s. Large section size for section %i of 0x%x being truncated to 0x%x to fit within the image size. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 						this->get_name(), location, i, this->_header_sections[i].Misc.VirtualSize, new_size );
 					delete[] location;
 					this->_header_sections[i].Misc.VirtualSize = new_size;
@@ -1494,7 +1782,7 @@ bool pe_header::process_disk_image( export_list* exports )
 			_header_pe64->OptionalHeader.SizeOfImage = required_space;
 			
 			if( _options->Verbose )
-				printf( "INFO: Copying the corrected memory PE header into file PE header format.\r\n");
+				printf( "INFO: Copying the corrected memory PE header into file PE header format.\n");
 
 			// Copy over the modified PE header into the imaged version
 			if( _test_read( larger_image, larger_image_size, larger_image, _header_pe64->OptionalHeader.SizeOfHeaders ) &&
@@ -1512,7 +1800,7 @@ bool pe_header::process_disk_image( export_list* exports )
 			{
 				// Pack it down into a disk image of the file
 				if( _options->Verbose )
-						printf( "INFO: Packing down memory sections into the file.\r\n");
+						printf( "INFO: Packing down memory sections into the file.\n");
 
 				// Allocate the necessary space for the physical image and initialize it to zero
 				_disk_image_size = required_space;
@@ -1532,7 +1820,7 @@ bool pe_header::process_disk_image( export_list* exports )
 					for( int i = 0; i < _num_sections; i++ )
 					{
 						if( _options->Verbose )
-							printf( "INFO: Packing down section %i.\r\n", i);
+							printf( "INFO: Packing down section %i.\n", i);
 
 						// Copy this section if the source and destination are both within acceptable bounds
 						if( _test_read( _disk_image, _disk_image_size,
@@ -1548,7 +1836,7 @@ bool pe_header::process_disk_image( export_list* exports )
 				delete [] larger_image;
 
 				if( _options->Verbose )
-					printf( "INFO: Done processing disk image.\r\n");
+					printf( "INFO: Done processing disk image.\n");
 
 				return true;
 			}
@@ -1589,7 +1877,7 @@ bool pe_header::process_import_directory( )
 			}while(more);
 
 			if( _options->Verbose )
-				printf("Found %i import descriptors.\r\n", _header_import_descriptors_count);
+				printf("Found %i import descriptors.\n", _header_import_descriptors_count);
 
 			if( _header_import_descriptors_count > 0 )
 			{
@@ -1621,7 +1909,7 @@ bool pe_header::process_import_directory( )
 					}while(more);
 					
 					if( _options->Verbose )
-							printf("Reconstructed %i thunk data entries.\r\n", num_iat_entries);
+							printf("Reconstructed %i thunk data entries.\n", num_iat_entries);
 				}
 			}
 		}
@@ -1656,7 +1944,7 @@ bool pe_header::process_import_directory( )
 			}while(more);
 
 			if( _options->Verbose )
-				printf("Found %i import descriptors.\r\n", _header_import_descriptors_count);
+				printf("Found %i import descriptors.\n", _header_import_descriptors_count);
 
 			if( _header_import_descriptors_count > 0 )
 			{
@@ -1688,7 +1976,7 @@ bool pe_header::process_import_directory( )
 					}while(more);
 					
 					if( _options->Verbose )
-							printf("Reconstructed %i thunk data entries.\r\n", num_iat_entries);
+							printf("Reconstructed %i thunk data entries.\n", num_iat_entries);
 				}
 			}
 		}

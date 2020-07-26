@@ -18,7 +18,7 @@ bool close_watcher::start_monitor()
 		_monitor_request_stop = false;
 		_monitoring_thread = new thread(&close_watcher::_monitor_dump_on_close, this);
 
-		printf("Started monitoring for process closes.\r\n");
+		printf("Started monitoring for process closes.\n");
 	}
 	return true;
 }
@@ -34,7 +34,7 @@ bool close_watcher::stop_monitor()
 		delete _monitoring_thread;
 		_monitoring_thread = NULL;
 
-		printf("Stopped monitoring for process closes.\r\n");
+		printf("Stopped monitoring for process closes.\n");
 	}
 
 	return true;
@@ -82,7 +82,7 @@ void close_watcher::_monitor_dump_on_close()
 								dump_process* dumper = new dump_process(entry.th32ProcessID, _clean_db, _options, true);
 								if (dumper->monitor_close_start())
 								{
-									printf("...hooked close of: pid 0x%x,%S\r\n", entry.th32ProcessID, entry.szExeFile);
+									printf("...hooked close of: pid 0x%x,%S\n", entry.th32ProcessID, entry.szExeFile);
 									hooked_processes.insert(std::pair<DWORD, dump_process*>(dumper->get_pid(), dumper));
 									hooked_pids.insert(dumper->get_pid());
 								}
@@ -105,7 +105,7 @@ void close_watcher::_monitor_dump_on_close()
 				// Dump this process by adding it to the multi-threaded dumping queue
 				char name[0x200];
 				it->second->get_process_name(name, sizeof(name));
-				printf("Process %s requesting to close, we are dumping it...\r\n", name);
+				printf("Process %s requesting to close, we are dumping it...\n", name);
 				_work_queue.push(it->second); // Will be freed when it gets processed from work queue
 
 				// Remove this process
@@ -123,7 +123,7 @@ void close_watcher::_monitor_dump_on_close()
 	// Wait for the work queue to finish processing
 	while (!_work_queue.empty())
 	{
-		printf("waiting for dump commands to be pulled from work queue...\r\n");
+		printf("waiting for dump commands to be pulled from work queue...\n");
 		Sleep(200);
 	}
 
