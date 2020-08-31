@@ -428,6 +428,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	options.EntryPointHash = true;
 	options.NumberOfThreads = 16; // Default 16 threads
 	options.ForceReconstructEntryPoint = false;
+	options.Win64 = false;
 	
 	DWORD pid = -1;
 	__int64 address = 0;
@@ -878,7 +879,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	}
 
 	// Warn if running in 32 bit mode on a 64 bit OS
-	if( is_win64() && sizeof(void*) == 4 )
+	if( (options.Win64 = is_win64()) && sizeof(void*) == 4 )
 	{
 		printf("WARNING: To properly access all processes on a 64 bit Windows version, the 64 bit version of this tool should be used. Currently Process Dump is running as a 32bit process under a 64bit operating system.\n\n");
 	}

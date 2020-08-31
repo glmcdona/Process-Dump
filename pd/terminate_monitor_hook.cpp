@@ -6,8 +6,19 @@ bool terminate_monitor_hook::add_redirect(unsigned __int64 target_address)
 {
 	SIZE_T num_written = 0;
 	unsigned char inject[0x20];
+	int num_write = 0;
 
-	if (!_is64)
+	if (!_options->Win64)
+	{
+		// near jmp to injected code
+		unsigned char data[] = {
+			0xE9, 0x00, 0x00, 0x00, 0x00
+		};
+
+		*(unsigned __int32*)(data + 1) = (unsigned __int32)(target_address - _address_terminate - 5);
+		memcpy(inject, data, sizeof(data));
+		num_write = sizeof(data);
+	}else if (!_is64)
 	{
 		// Redirect code that is the same for x86 and AMD64
 		unsigned char data[] = {
@@ -29,6 +40,7 @@ bool terminate_monitor_hook::add_redirect(unsigned __int64 target_address)
 
 		*(unsigned __int64*)(data + 11) = (unsigned __int64)(target_address);
 		memcpy(inject, data, sizeof(data));
+		num_write = sizeof(data);
 	}
 	else
 	{
@@ -52,12 +64,13 @@ bool terminate_monitor_hook::add_redirect(unsigned __int64 target_address)
 
 		*(unsigned __int64*)(data + 12) = (unsigned __int64)(target_address);
 		memcpy(inject, data, sizeof(data));
+		num_write = sizeof(data);
 	}
 	
 	
 	// Write the redirect
-	bool success = WriteProcessMemory(_ph, (LPVOID)  _address_terminate, inject, sizeof(inject), &num_written);
-	if (success && sizeof(inject) == num_written)
+	bool success = WriteProcessMemory(_ph, (LPVOID)  _address_terminate, inject, num_write, &num_written);
+	if (success && num_write == num_written)
 	{
 		return true;
 	}
