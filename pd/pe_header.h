@@ -27,6 +27,8 @@ using namespace std::tr1;
 // 10MB
 #define MAX_SECTION_SIZE (1024 * 1000) * 60
 
+class pe_hash_database;
+
 static bool static_zero_init = false;
 static char static_zero [100];
 
