@@ -8,7 +8,7 @@ bool terminate_monitor_hook::add_redirect(unsigned __int64 target_address)
 	unsigned char inject[0x20];
 	int num_write = 0;
 
-	if (!_options->Win64)
+	if (!_is64)
 	{
 		// near jmp to injected code
 		unsigned char data[] = {
@@ -18,51 +18,15 @@ bool terminate_monitor_hook::add_redirect(unsigned __int64 target_address)
 		*(unsigned __int32*)(data + 1) = (unsigned __int32)(target_address - _address_terminate - 5);
 		memcpy(inject, data, sizeof(data));
 		num_write = sizeof(data);
-	}else if (!_is64)
-	{
-		// Redirect code that is the same for x86 and AMD64
-		unsigned char data[] = {
-			// call +0
-			0xE8, 0x00, 0x00, 0x00, 0x00,
-
-			// pop eax
-			0x58,
-
-			// add eax, 0x6
-			0x83, 0xC0, 0x06,
-
-			// jmp [eax]
-			0xFF, 0x20,
-
-			// <target>
-			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <target_address>
-		};
-
-		*(unsigned __int64*)(data + 11) = (unsigned __int64)(target_address);
-		memcpy(inject, data, sizeof(data));
-		num_write = sizeof(data);
 	}
 	else
 	{
-		// 64-bit code
+		// near jmp to injected code
 		unsigned char data[] = {
-			// call +0
-			0xE8, 0x00, 0x00, 0x00, 0x00,
-
-			// pop rax
-			0x58,
-
-			// add rax, 0x7
-			0x48, 0x83, 0xC0, 0x07,
-
-			// jmp [rax]
-			0xFF, 0x20,
-
-			// <target>
-			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <target_address>
+			0xE9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 		};
 
-		*(unsigned __int64*)(data + 12) = (unsigned __int64)(target_address);
+		*(unsigned __int64*)(data + 1) = (unsigned __int64)(target_address - _address_terminate - 5);
 		memcpy(inject, data, sizeof(data));
 		num_write = sizeof(data);
 	}

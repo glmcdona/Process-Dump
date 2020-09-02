@@ -23,7 +23,6 @@ public:
 	bool DumpChunks; // Dump loose code chunks
 	bool EntryPointHash;
 	bool ForceReconstructEntryPoint;
-	bool Win64; // is OS 64bits?
 	int NumberOfThreads;
 
 	__int64 EntryPointOverride;
