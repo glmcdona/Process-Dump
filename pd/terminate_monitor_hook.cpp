@@ -21,12 +21,25 @@ bool terminate_monitor_hook::add_redirect(unsigned __int64 target_address)
 	}
 	else
 	{
-		// near jmp to injected code
+		// 64-bit code
 		unsigned char data[] = {
-			0xE9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+			// call +0
+			0xE8, 0x00, 0x00, 0x00, 0x00,
+
+			// pop rax
+			0x58,
+
+			// add rax, 0x7
+			0x48, 0x83, 0xC0, 0x07,
+
+			// jmp [rax]
+			0xFF, 0x20,
+
+			// <target>
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <target_address>
 		};
 
-		*(unsigned __int64*)(data + 1) = (unsigned __int64)(target_address - _address_terminate - 5);
+		*(unsigned __int64*)(data + 12) = (unsigned __int64)(target_address);
 		memcpy(inject, data, sizeof(data));
 		num_write = sizeof(data);
 	}
