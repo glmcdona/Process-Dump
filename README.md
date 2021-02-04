@@ -21,7 +21,7 @@ This tool requires Microsoft Visual C++ Redistributable for Visual Studio 2015 t
 * https://www.microsoft.com/en-ca/download/details.aspx?id=48145
 
 # Compiling source code
-This is designed for Visual Studio 2015 and works with the free Community edition. Just open the project file with VS2015 and compile, it should be that easy!
+This is designed for Visual Studio 2019 and works with the free Community edition. Just open the project file with VS2019 and compile, it should be that easy!
 
 
 # Example Usage
