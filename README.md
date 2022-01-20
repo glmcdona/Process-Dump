@@ -15,7 +15,7 @@ I'm maintaining an official compiled release on my website here:
 
 # Installation
 You can download the latest compiled release of Process Dump here:
-* http://www.split-code.com/files/pd_v2_1.zip
+* https://github.com/glmcdona/Process-Dump/raw/master/Releases/ProcessDump_v2_1.zip
 
 This tool requires Microsoft Visual C++ Redistributable for Visual Studio 2015 to be installed to work:
 * https://www.microsoft.com/en-ca/download/details.aspx?id=48145
