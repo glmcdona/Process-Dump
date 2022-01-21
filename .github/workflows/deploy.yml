@@ -18,23 +18,6 @@ env:
   BUILD_EXECUTABLE: pd.exe
 
 jobs:
-  create-release:
-    runs-on: windows-latest
-    
-    steps:
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@latest
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.previoustag.outputs.tag }}
-        release_name: Release ${{ steps.previoustag.outputs.tag }}
-        body: |
-          ${{ steps.Changelog.outputs.changelog }}
-        draft: false
-        prerelease: false
-  
   build:
     runs-on: windows-latest
     
@@ -66,29 +49,62 @@ jobs:
       with:
         name: ${{ matrix.targetPlatform }} Executable
         path: ${{ env.BUILD_FILE_PATH }}
+
+  release:
+    runs-on: windows-latest
     
+    steps:
+    - uses: actions/checkout@v2
+
+    - uses: actions/download-artifact@v2
+      id: executable_x86
+      with:
+        name: Win32 Executable
+    
+    - uses: actions/download-artifact@v2
+      id: executable_x64
+      with:
+        name: x64 Executable
+
+    - name: Display structure of downloaded files
+      run: ls -R
+      
     - name: 'Get Previous tag'
       id: previoustag
       uses: "WyriHaximus/github-action-get-previous-tag@v1"
       with:
         fallback: develop # Optional fallback tag to use when no tag can be found
-        
-    - name: condition 1
-      if: ${{ matrix.targetPlatform == 'x64' }}
-      run: echo "BUILD_RELEASE_FILENAME=pd64.exe" >> "$GITHUB_ENV"
-
-    - name: condition 2
-      if: ${{ matrix.targetPlatform == 'Win32' }}
-      run: echo "BUILD_RELEASE_FILENAME=pd32.exe" >> "$GITHUB_ENV"
+  
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@latest
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.previoustag.outputs.tag }}
+        release_name: Release ${{ steps.previoustag.outputs.tag }}
+        body: |
+          ${{ steps.Changelog.outputs.changelog }}
+        draft: false
+        prerelease: false
     
     # Upload release asset:   https://github.com/actions/upload-release-asset
-    - name: Update release asset
-      id: upload-release-asset
+    - name: Update release asset x86
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}  # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
-        asset_path: ${{ env.BUILD_FILE_PATH }}
-        asset_name: ${{ env.BUILD_RELEASE_FILENAME }}
+        asset_path: ${{ steps.executable_x86.outputs.download-path }}
+        asset_name: pd32.exe
+        asset_content_type: application/zip
+      
+    - name: Update release asset x64
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}  # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
+        asset_path: ${{ steps.executable_x64.outputs.download-path }}
+        asset_name: pd64.exe
         asset_content_type: application/zip
