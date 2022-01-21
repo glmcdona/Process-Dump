@@ -796,7 +796,7 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	if( flagHeader )
 	{
-		printf("Process Dump v2.1\n");
+		printf("Process Dump v2.2 (dev)\n");
 		printf("  Copyright © 2017, Geoff McDonald\n");
 		printf("  http://www.split-code.com/\n");
 		printf("  https://github.com/glmcdona/Process-Dump\n\n");
