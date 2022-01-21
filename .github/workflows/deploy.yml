@@ -64,7 +64,7 @@ jobs:
     
     - name: Rename
       run: |
-        rename pd.exe pd32.exe
+        ren pd.exe pd32.exe
     
     - uses: actions/download-artifact@v2
       id: executable_x64
@@ -73,7 +73,7 @@ jobs:
     
     - name: Rename
       run: |
-        rename pd.exe pd64.exe
+        ren pd.exe pd64.exe
 
     - name: Display structure of downloaded files
       run: ls -R
