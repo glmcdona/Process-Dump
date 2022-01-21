@@ -5,7 +5,6 @@ on: [push]
 env:
   # Path to the solution file relative to the root of the project.
   SOLUTION_FILE_PATH: .
-  BUILD_FILE_PATH: .\Release\pd.exe
 
   # Configuration type to build.
   # You can convert this to a build matrix if you need coverage of multiple configuration types.
@@ -19,6 +18,9 @@ jobs:
     strategy:
       matrix:
         targetPlatform: [Win32, x64]
+    
+    env:
+      BUILD_FILE_PATH: .{{ targetPlatform }}\Release\pd.exe
 
     steps:
     - uses: actions/checkout@v2
