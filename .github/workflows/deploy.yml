@@ -51,6 +51,7 @@ jobs:
         path: ${{ env.BUILD_FILE_PATH }}
 
   release:
+    needs: build
     runs-on: windows-latest
     
     steps:
