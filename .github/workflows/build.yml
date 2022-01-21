@@ -20,7 +20,7 @@ jobs:
         targetPlatform: [Win32, x64]
     
     env:
-      BUILD_FILE_PATH: .${{ targetPlatform }}\Release\pd.exe
+      BUILD_FILE_PATH: .${{ matrix.targetPlatform }}\Release\pd.exe
 
     steps:
     - uses: actions/checkout@v2
