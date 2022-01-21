@@ -4,7 +4,7 @@ on: [push]
   #push:
   #  tags:
   #    # Has a release version tag
-  #    - '[0-9]+.[0-9]+.[0-9]+'
+  #    - 'v[0-9]+.[0-9]+.[0-9]+'
 
 env:
   # Path to the solution file relative to the root of the project.
@@ -14,6 +14,8 @@ env:
   # You can convert this to a build matrix if you need coverage of multiple configuration types.
   # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
   BUILD_CONFIGURATION: Release
+  
+  BUILD_EXECUTABLE: pd.exe
 
 jobs:
   build:
@@ -47,6 +49,12 @@ jobs:
       with:
         name: ${{ matrix.targetPlatform }} Executable
         path: ${{ env.BUILD_FILE_PATH }}
+    
+    - name: 'Get Previous tag'
+      id: previoustag
+      uses: "WyriHaximus/github-action-get-previous-tag@v1"
+      with:
+        fallback: develop # Optional fallback tag to use when no tag can be found
 
     - name: Create Release
       id: create_release
@@ -54,8 +62,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ github.ref }}.${{ matrix.targetPlatform }}
-        release_name: Release ${{ github.ref }}.${{ matrix.targetPlatform }}
+        tag_name: ${{ steps.previoustag.outputs.tag }}
+        release_name: Release ${{ steps.previoustag.outputs.tag }}
         body: |
           ${{ steps.Changelog.outputs.changelog }}
         draft: false
@@ -70,5 +78,5 @@ jobs:
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}  # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
         asset_path: ${{ env.BUILD_FILE_PATH }}
-        asset_name: pd.exe
+        asset_name: pd.exe (${{ matrix.targetPlatform }})
         asset_content_type: application/zip
