@@ -47,12 +47,12 @@ jobs:
       with:
         name: ${{ matrix.targetplatform }} Executable
         path: ${{ env.BUILD_FILE_PATH }}
-    
-    - name: Changelog
-      uses: scottbrenner/generate-changelog-action@master
-      id: Changelog
-      env:
-        REPO: ${{ github.repository }}
+
+    - name: Changelog CI
+      uses: saadmk11/changelog-ci@v1.0.0
+      with:
+        # The release version that will be used on the generated Changelog
+        release_version: latest-develop
 
     - name: Create Release
       id: create_release
