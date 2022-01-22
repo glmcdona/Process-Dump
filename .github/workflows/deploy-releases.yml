@@ -1,12 +1,12 @@
-name: BuildAndDeploy-Release
+name: BuildAndDeploy_Release
 
 on:
   push:
-    tags:
-      # Has a release version tag
-      - 'v[0-9]+.[0-9]+'
-    branches:
-      - main
+  #  tags:
+  #    # Has a release version tag
+  #    - 'v[0-9]+.[0-9]+'
+  #  branches:
+  #    - main
   workflow_dispatch:
 
 env:

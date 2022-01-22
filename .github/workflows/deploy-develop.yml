@@ -1,9 +1,9 @@
-name: BuildAndDeploy-Develop
+name: BuildAndDeploy_Develop
 
 on:
   push:
-      branches:
-        - main
+  #    branches:
+  #      - main
   workflow_dispatch:
 
 env:
