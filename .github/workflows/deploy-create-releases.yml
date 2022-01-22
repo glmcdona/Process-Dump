@@ -54,6 +54,18 @@ jobs:
       with:
         name: ${{ matrix.targetPlatform }} Executable
         path: ${{ env.BUILD_FILE_PATH }}
+    
+    - name: Upload build artifacts old x86
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ matrix.targetPlatform }} Executable
+        path: .\Release\pd.exe
+    
+    - name: Upload build artifacts old x64
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ matrix.targetPlatform }} Executable
+        path: .\x64\Release\pd.exe
 
   release:
     needs: build
