@@ -1,10 +1,13 @@
-name: BuildAndDeploy
+name: BuildAndDeploy_Release
 
-on: [push]
-  #push:
-  #  tags:
-  #    # Has a release version tag
-  #    - 'v[0-9]+.[0-9]+.[0-9]+'
+on:
+  push:
+    tags:
+      # Has a release version tag
+      - 'v[0-9]+.[0-9]+'
+    branches:
+      - main
+  workflow_dispatch:
 
 env:
   # Path to the solution file relative to the root of the project.
@@ -14,8 +17,6 @@ env:
   # You can convert this to a build matrix if you need coverage of multiple configuration types.
   # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
   BUILD_CONFIGURATION: Release
-  
-  BUILD_EXECUTABLE: pd.exe
 
 jobs:
   build:
