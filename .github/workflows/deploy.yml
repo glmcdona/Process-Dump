@@ -82,7 +82,7 @@ jobs:
       id: previoustag
       uses: "WyriHaximus/github-action-get-previous-tag@v1"
       with:
-        fallback: develop # Optional fallback tag to use when no tag can be found
+        fallback: Develop # Optional fallback tag to use when no tag can be found
   
     - name: Create Release
       id: create_release
@@ -91,7 +91,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ steps.previoustag.outputs.tag }}
-        release_name: Release ${{ steps.previoustag.outputs.tag }}
+        release_name: ${{ steps.previoustag.outputs.tag }}
         body: |
           ${{ steps.Changelog.outputs.changelog }}
         draft: false
