@@ -13,12 +13,6 @@ Process Dump works for Windows 32 and 64 bit operating systems and can dump memo
 I'm maintaining an official compiled release on my website here:
   http://split-code.com/processdump.html
 
-# Installation
-You can download the latest compiled release of Process Dump here:
-* http://www.split-code.com/files/pd_v2_1.zip
-
-This tool requires Microsoft Visual C++ Redistributable for Visual Studio 2015 to be installed to work:
-* https://www.microsoft.com/en-ca/download/details.aspx?id=48145
 
 # Compiling source code
 This is designed for Visual Studio 2015 and works with the free Community edition. Just open the project file with VS2015 and compile, it should be that easy!
