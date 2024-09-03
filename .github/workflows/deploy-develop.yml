@@ -55,7 +55,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2
 
-    - uses: actions/download-artifact@v2
+    - uses: actions/download-artifact@v4.1.7
       id: executable_x86
       with:
         name: Win32 Executable
@@ -64,7 +64,7 @@ jobs:
       run: |
         ren pd.exe pd32.exe
     
-    - uses: actions/download-artifact@v2
+    - uses: actions/download-artifact@v4.1.7
       id: executable_x64
       with:
         name: x64 Executable
