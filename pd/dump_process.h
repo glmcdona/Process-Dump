@@ -3,7 +3,7 @@
 // content
 #include "pe_header.h"
 #include "pe_hash_database.h"
-#include "windows.h"
+#include <windows.h>
 #include <tlhelp32.h>
 #include "simple.h"
 #include "module_list.h"

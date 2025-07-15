@@ -95,9 +95,10 @@ bool dump_process::get_process_name(char* process_name, SIZE_T byte_length)
 			strcpy_s(process_name, byte_length, _process_name);
 			return true;
 		}
+		if (byte_length > 0)
+			_process_name[0] = 0;
 	}
-	if (byte_length > 0)
-		_process_name[0] = 0;
+	
 	return false;
 }
 
@@ -126,12 +127,7 @@ bool dump_process::is64()
 MBI_BASIC_INFO dump_process::get_mbi_info(unsigned __int64 address)
 {
 	_MEMORY_BASIC_INFORMATION64 mbi;
-	MBI_BASIC_INFO result;
-	result.base = 0;
-	result.end = 0;
-	result.protect = 0;
-	result.valid = false;
-	result.executable = false;
+	MBI_BASIC_INFO result{ 0 };
 
 	// Load this heap information
 	 __int64 blockSize = VirtualQueryEx(_ph, (LPCVOID)address, (PMEMORY_BASIC_INFORMATION)&mbi, sizeof(_MEMORY_BASIC_INFORMATION64));
@@ -149,7 +145,7 @@ MBI_BASIC_INFO dump_process::get_mbi_info(unsigned __int64 address)
 		_MEMORY_BASIC_INFORMATION32* mbi32 = (_MEMORY_BASIC_INFORMATION32*)&mbi;
 
 		result.base = mbi32->BaseAddress;
-		result.end = mbi32->BaseAddress + mbi32->RegionSize;
+		result.end = (__int64)mbi32->BaseAddress + mbi32->RegionSize;
 		result.protect = mbi32->Protect;
 		result.valid = mbi32->State != MEM_FREE && !(mbi32->Protect & (PAGE_NOACCESS | PAGE_GUARD));
 		result.executable = (mbi32->Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) > 0;
@@ -174,7 +170,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 			maxAddress = 0xffffffffffffffff; // Not a problem for 32bit targets
 			
 			// Walk the process heaps
-			__int64 address = 0;
+			unsigned __int64 address = 0;
 			
 			// First loop to build a list of executable heaps for later use in locating loose executable heaps not associated with any modules
 			set<unsigned __int64> executable_heaps;
@@ -190,7 +186,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 						executable_heaps.insert(mbi_info.base);
 					}
 					
-					if( mbi_info.end + 1 <= address )
+					if( (unsigned __int64)mbi_info.end + 1 <= address )
 						break;
 					address = mbi_info.end + 1;
 				}
@@ -280,11 +276,6 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 											}
 										}
 									}
-
-									
-
-									
-
 								}
 								delete header;
 							}
@@ -295,7 +286,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 					}
 				}
 
-				if (mbi_info.end + 1 <= address)
+				if ((unsigned __int64)mbi_info.end + 1 <= address)
 					break;
 				address = mbi_info.end + 1;
 			}
@@ -333,12 +324,12 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 						output_hashes->insert( chunk_header_hash );
 
 						// Calculate the generic import reference hash as well
-						pe_header* header = new pe_header( _pid, (void*) *it, modules, _options );
-						header->build_pe_header( 0x1000, true, 1 ); // 64bit, only build it with the 1 executable section for performance reasons
-						header->process_sections();
+						pe_header header( _pid, (void*) *it, modules, _options );
+						header.build_pe_header( 0x1000, true, 1 ); // 64bit, only build it with the 1 executable section for performance reasons
+						header.process_sections();
 
 						// Get the import attributes of this header
-						IMPORT_SUMMARY import_summary = header->get_imports_information(&this->_export_list);
+						IMPORT_SUMMARY import_summary = header.get_imports_information(&this->_export_list);
 
 						// Check hash
 						if( import_summary.HASH_GENERIC != 0 && !_db_clean->contains(import_summary.HASH_GENERIC) && output_hashes->count( import_summary.HASH_GENERIC ) == 0 )
@@ -348,7 +339,6 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 							
 							output_hashes->insert( import_summary.HASH_GENERIC );
 						}
-						delete header;
 					}
 				}
 				if( _options->Verbose )
@@ -403,15 +393,12 @@ bool dump_process::build_export_list()
 			// Loop through each of these modules, grabbing their exports
 			for (unordered_map<unsigned __int64, module*>::const_iterator item = modules->_modules.begin(); item != modules->_modules.end(); ++item)
 			{
-				pe_header* header = new pe_header(_pid, (void*) item->first, modules, _options);
-				if (header->process_pe_header() && header->process_sections() && header->process_export_directory())
+				pe_header header(_pid, (void*) item->first, modules, _options);
+				if (header.process_pe_header() && header.process_sections() && header.process_export_directory())
 				{
 					// Load it's exports
-					this->_export_list.add_exports(header->get_exports());
+					this->_export_list.add_exports(header.get_exports());
 				}
-
-				// Cleanup
-				delete header;
 			}
 
 			delete modules;
@@ -431,21 +418,17 @@ bool dump_process::build_export_list(export_list* result, char* library, module_
 		// Loop through each of these modules, grabbing their exports
 		for (unordered_map<unsigned __int64, module*>::const_iterator item = modules->_modules.begin(); item != modules->_modules.end(); ++item)
 		{
-			if (strcmpi(item->second->short_name, library) == 0)
+			if (_strcmpi(item->second->short_name, library) == 0)
 			{
-				pe_header* header = new pe_header(_pid, (void*)item->first, modules, _options);
-				if (header->process_pe_header() && header->process_sections() && header->process_export_directory())
+				pe_header header(_pid, (void*)item->first, modules, _options);
+				if (header.process_pe_header() && header.process_sections() && header.process_export_directory())
 				{
 					// Load its exports
-					result->add_exports(header->get_exports());
+					result->add_exports(header.get_exports());
 				}
-
-				// Cleanup
-				delete header;
 			}
 		}
 	}
-
 
 	return true;
 }
@@ -651,7 +634,7 @@ void dump_process::dump_all()
 			maxAddress = 0xffffffffffffffff; // Not a problem for 32bit targets
 			
 			// Walk the process heaps
-			__int64 address = 0;
+			unsigned __int64 address = 0;
 			
 			// First loop to build a list of executable heaps for later use in locating loose executable heaps not associated with any modules
 			set<unsigned __int64> executable_heaps;
@@ -667,7 +650,7 @@ void dump_process::dump_all()
 						executable_heaps.insert(mbi_info.base);
 					}
 
-					if (mbi_info.end + 1 <= address)
+					if ((unsigned __int64)mbi_info.end + 1 <= address)
 						break;
 					address = mbi_info.end + 1;
 				}
@@ -691,7 +674,7 @@ void dump_process::dump_all()
 					char output[2];
 					SIZE_T out_read;
 					int count = 0;
-					while (base + 0x300 < mbi_info.end && count < 1000) // Skip the rest of the section if we have looped over 1000 pages.
+					while (base + 0x300 < (unsigned __int64)mbi_info.end && count < 1000) // Skip the rest of the section if we have looped over 1000 pages.
 					{
 						if (ReadProcessMemory(_ph, (LPCVOID)((unsigned char*)base), output, 2, &out_read) && out_read == 2)
 						{
@@ -775,7 +758,7 @@ void dump_process::dump_all()
 					}
 				}
 
-				if (mbi_info.end + 1 <= address)
+				if ((unsigned __int64)mbi_info.end + 1 <= address)
 					break;
 				address = mbi_info.end + 1;
 			}
@@ -820,7 +803,7 @@ void dump_process::dump_all()
 						if( import_summary.HASH_GENERIC != 0 && !_db_clean->contains(import_summary.HASH_GENERIC) )
 						{
 							if( _options->Verbose )
-								fprintf( stdout, "INFO: Unattached executable heap at 0x%llX found with %i imports matched.\n", *it, import_summary.COUNT_UNIQUE_IMPORT_ADDRESSES );
+								fprintf( stdout, "INFO: Unattached executable heap at 0x%llX found with %zu imports matched.\n", *it, import_summary.COUNT_UNIQUE_IMPORT_ADDRESSES );
 							
 							if( header->somewhat_parsed() && import_summary.COUNT_UNIQUE_IMPORT_ADDRESSES >= 2 ) // Require at least 5 imports for dumping
 							{

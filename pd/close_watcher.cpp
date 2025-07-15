@@ -147,7 +147,7 @@ void close_watcher::_monitor_dump_on_close()
 void close_watcher::_dump_process_worker_and_close()
 {
 	// Dump this process
-	unordered_set<unsigned __int64> new_hashes;
+
 	while (!_monitor_request_stop || !_work_queue.empty())
 	{
 		// Process the hashes for this process

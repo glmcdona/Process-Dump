@@ -2,7 +2,7 @@
 #include "simple.h"
 
 
-DWORD process_find(string match_regex, DynArray<process_description*>* result)
+DWORD process_find(string match_regex, DynArray<process_description*>& result)
 {
 	PROCESSENTRY32 entry;
     entry.dwSize = sizeof(PROCESSENTRY32);
@@ -24,7 +24,7 @@ DWORD process_find(string match_regex, DynArray<process_description*>* result)
 					if( regex_match( name, reg ) )
 					{  
 						// Record this as a matching process
-						result->Add( new process_description( process_name, entry.th32ProcessID ) );
+						result.Add( new process_description( process_name, entry.th32ProcessID ) );
 					}
 				}
 				catch( std::tr1::regex_error e )
@@ -32,14 +32,12 @@ DWORD process_find(string match_regex, DynArray<process_description*>* result)
 					fprintf( stderr, "ERROR: Invalid regex expression for matching process names." );
 					return 0;
 				}
-
-
 			}
 		}
 
 		CloseHandle(snapshot);
 	}
-	return result->GetSize();
+	return result.GetSize();
 }
 
 string ExePath() {
@@ -69,13 +67,16 @@ void PrintLastError(LPTSTR lpszFunction)
     // Display the error message and exit the process
     lpDisplayBuf = (LPVOID)LocalAlloc(LMEM_ZEROINIT, 
         (lstrlen((LPCTSTR)lpMsgBuf) + lstrlen((LPCTSTR)lpszFunction) + 40) * sizeof(TCHAR)); 
-    StringCchPrintf((LPTSTR)lpDisplayBuf, 
-        LocalSize(lpDisplayBuf) / sizeof(TCHAR),
-        TEXT("%s failed with error %d: %s"), 
-        lpszFunction, dw, lpMsgBuf); 
+	if (lpDisplayBuf)
+	{
+		StringCchPrintf((LPTSTR)lpDisplayBuf,
+			LocalSize(lpDisplayBuf) / sizeof(TCHAR),
+			TEXT("%s failed with error %d: %s"),
+			lpszFunction, dw, (LPCTSTR)lpMsgBuf);
 
-	fwprintf(stderr,(LPCTSTR) lpDisplayBuf );
+		fwprintf(stderr, (LPCTSTR)lpDisplayBuf);
+		LocalFree(lpDisplayBuf);
+	}
 
     LocalFree(lpMsgBuf);
-    LocalFree(lpDisplayBuf);
 }

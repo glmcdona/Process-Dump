@@ -124,7 +124,7 @@ unsigned __int64 export_list::find_export(char* library, char* name, bool is64)
 	{
 		//if( strcmp(it->second->library_name,"kernel32.dll") == 0 )
 		//	printf("%s::%s\n", it->second->library_name, it->second->name);
-		if (it->second->is64 == is64 && (library == NULL || strcmpi(library, it->second->library_name) == 0 ) && strcmpi(name, it->second->name) == 0)
+		if (it->second->is64 == is64 && (library == NULL || _strcmpi(library, it->second->library_name) == 0 ) && _strcmpi(name, it->second->name) == 0)
 		{
 			// Found a match
 			return it->second->address;
@@ -171,10 +171,10 @@ void export_list::add_export(unsigned __int64 address, export_entry* entry)
 			{
 				// 32bit value
 				if (address > _max32)
-					_max32 = address;
+					_max32 = (unsigned __int32)address;
 				if (address < _min32)
-					_min32 = address;
-				_bits32 = _bits32 | address;
+					_min32 = (unsigned __int32)address;
+				_bits32 = _bits32 | (unsigned __int32)address;  //is it OK?
 			}
 		}
 	}
@@ -207,7 +207,7 @@ bool export_list::add_exports(unsigned char* image, SIZE_T image_size, unsigned 
 		}
 		
 		// Parse the export directory
-		for (int i = 0; i < export_directory->NumberOfNames; i++)
+		for (DWORD i = 0; i < export_directory->NumberOfNames; i++)
 		{
 			// Load the ordinal
 			if( test_read(image, image_size, image + export_directory->AddressOfNameOrdinals + i*2, 2) )
@@ -242,7 +242,7 @@ bool export_list::add_exports(unsigned char* image, SIZE_T image_size, unsigned 
 						__int64 address = image_base + rva;
 						
 						// Add this export
-						export_entry* new_entry = new export_entry( library_name, name, ordinal, rva, address, is64);
+						export_entry* new_entry = new export_entry( library_name, name, (WORD)ordinal, rva, address, is64);
 						add_export(address, new_entry);
 						delete new_entry;
 					}

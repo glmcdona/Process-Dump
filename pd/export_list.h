@@ -1,7 +1,7 @@
 #pragma once
 
 #include "DynArray.h"
-#include "windows.h"
+#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdexcept>

@@ -3,7 +3,6 @@
 #include <thread>
 #include "pe_hash_database.h"
 #include "dump_process.h"
-#include "windows.h"
 
 class close_watcher
 {

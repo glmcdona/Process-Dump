@@ -1,10 +1,7 @@
 #pragma once
-#include "windows.h"
+#include <windows.h>
 #include "DynArray.h"
 #include "utils.h"
-
-#define IMAGE_ORDINAL_FLAG64 0x8000000000000000ULL
-#define IMAGE_ORDINAL_FLAG32 0x80000000
 
 class import_library
 {

@@ -14,7 +14,7 @@ void pe_imports::add_fixup(char* library_name, char* proc_name, __int64 rva, boo
 
 void pe_imports::get_table_size(__int64 &descriptor_size, __int64 &extra_size)
 {
-	for( int i = 0; i < _libraries.GetSize(); i++ )
+	for(unsigned int i = 0; i < _libraries.GetSize(); i++ )
 	{
 		_libraries[i]->get_table_size( descriptor_size, extra_size );
 	}
@@ -25,19 +25,17 @@ bool pe_imports::build_table(unsigned char* section, __int64 section_size, __int
 {
 	// Build the import table in the new section
 	bool retval = true;
-	for( int i = 0; i < _libraries.GetSize(); i++ )
+	for(unsigned int i = 0; i < _libraries.GetSize(); i++ )
 	{
 		if( !_libraries[i]->build_table(section, section_size, section_rva, descriptor_offset, extra_offset) )
 			retval = false;
 	}
 
 	// Write the final descriptor
-	IMAGE_IMPORT_DESCRIPTOR blank_descrptor;
-	memset( &blank_descrptor, 0, sizeof(IMAGE_IMPORT_DESCRIPTOR) );
+	IMAGE_IMPORT_DESCRIPTOR blank_descrptor{ 0 };
 
 	if( test_read( section, section_size, section + descriptor_offset , sizeof(IMAGE_IMPORT_DESCRIPTOR) ) )
 		memcpy( section + descriptor_offset, &blank_descrptor, sizeof(IMAGE_IMPORT_DESCRIPTOR) );
-
 
 	return retval;
 }
@@ -96,6 +94,7 @@ import_library::import_library(IMAGE_IMPORT_DESCRIPTOR* descriptor, bool win64)
 	_import_by_name = NULL;
 	_library_name = NULL;
 	_thunk_entry = NULL;
+	_import_by_name_len = 0;
 }
 
 import_library::import_library(char* library_name, int ordinal, __int64 rva, bool win64)
@@ -106,8 +105,9 @@ import_library::import_library(char* library_name, int ordinal, __int64 rva, boo
 	_descriptor->TimeDateStamp = -1;
 	_descriptor->ForwarderChain = -1;
 	_descriptor->Name = NULL; // Replace with rva to name upon writing
-	_descriptor->FirstThunk = rva; // PE Loader with patchup address at rva to become the address of the import, awesome!
+	_descriptor->FirstThunk = (DWORD)rva; // PE Loader with patchup address at rva to become the address of the import, awesome!
 	_import_by_name = NULL;
+	_import_by_name_len = 0;
 	_thunk_entry = new IMAGE_THUNK_DATA64();
 
 	_library_name = new char[strlen(library_name)+1];
@@ -128,7 +128,7 @@ import_library::import_library(char* library_name, char* proc_name, __int64 rva,
 	_descriptor->TimeDateStamp = -1;
 	_descriptor->ForwarderChain = -1;
 	_descriptor->Name = NULL; // Replace with rva to name upon writing
-	_descriptor->FirstThunk = rva; // PE Loader with patchup address at rva to become the address of the import, awesome!
+	_descriptor->FirstThunk = (DWORD)rva; // PE Loader with patchup address at rva to become the address of the import, awesome!
 	_thunk_entry = new IMAGE_THUNK_DATA64();
 
 	_library_name = new char[strlen(library_name)+1];
@@ -139,7 +139,7 @@ import_library::import_library(char* library_name, char* proc_name, __int64 rva,
 	
 	_import_by_name = (IMAGE_IMPORT_BY_NAME*) new char[strlen(proc_name)+1+sizeof(WORD)]; // {DWORD, procedure name}
 	_import_by_name->Hint = 0; // Not necessary
-	_import_by_name_len = strlen(proc_name)+1+sizeof(WORD);
+	_import_by_name_len = (int)strlen(proc_name)+1+sizeof(WORD);
 	strcpy((char*)(&_import_by_name->Name), proc_name);
 }
 
@@ -211,7 +211,7 @@ bool import_library::build_table(unsigned char* section, __int64 section_size, _
 		return false; // Not enough room
 
 	if( thunk_entry_rva != NULL )
-		_descriptor->OriginalFirstThunk = thunk_entry_rva; // Redirect this to our thunk rva
+		_descriptor->OriginalFirstThunk = (DWORD)thunk_entry_rva; // Redirect this to our thunk rva
 	
 	// Patch up the library name
 	if( _library_name != NULL )
@@ -220,7 +220,7 @@ bool import_library::build_table(unsigned char* section, __int64 section_size, _
 			return false; // Not enough room
 
 		strcpy((char*)(extra_offset + section), _library_name);
-		_descriptor->Name = extra_offset + section_rva;
+		_descriptor->Name = (DWORD)(extra_offset + section_rva);
 		
 		extra_offset += strlen(_library_name) + 1;
 	}

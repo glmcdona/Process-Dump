@@ -2,8 +2,6 @@
 
 #include "StdAfx.h"
 #include "hash.h"
-#include <stdio.h>
-#include "windows.h"
 
 /* Crc - 32 BIT ANSI X3.66 CRC checksum files */
 

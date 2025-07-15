@@ -1,11 +1,11 @@
 #pragma once
 
 #include <stdio.h>
-#include "windows.h"
+#include <windows.h>
 #include "simple.h"
 #include <tlhelp32.h>
 #include <unordered_map>
-#include "Psapi.h"
+#include <Psapi.h>
 
 using namespace std::tr1;
 
@@ -56,7 +56,6 @@ class module
 
 class module_list
 {
-	
 	HANDLE _ph;
 
 public:

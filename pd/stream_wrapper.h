@@ -1,9 +1,9 @@
 #pragma once
 
 #include <stdio.h>
-#include "windows.h"
-#include "simple.h"
+#include <windows.h>
 #include <tlhelp32.h>
+#include "simple.h"
 #include "module_list.h"
 
 
@@ -18,14 +18,14 @@ public:
 	virtual SIZE_T get_long_name( char* out_name, SIZE_T out_name_size ) = 0;
 	virtual SIZE_T get_location( char* out_name, SIZE_T out_name_size ) = 0;
 	virtual __int64 get_address() = 0;
-	virtual __int64 estimate_section_size( long offset ) = 0;
+	virtual __int64 estimate_section_size( SIZE_T offset ) = 0;
 	virtual DWORD get_region_characteristics( long offset ) = 0;
 	virtual ~stream_wrapper() {}
 	virtual void update_base( __int64 rva ) = 0;
 };
 
 
-class file_stream : stream_wrapper
+class file_stream : public stream_wrapper
 {
 	char* _filename;
 
@@ -62,7 +62,7 @@ public:
 		return 0;
 	}
 
-	virtual __int64 estimate_section_size( long offset )
+	virtual __int64 estimate_section_size( SIZE_T offset )
 	{
 		return 0;
 	}
@@ -107,7 +107,7 @@ public:
 		if( opened )
 		{
 			if( !fseek( fh, 0, SEEK_END) )
-				return ftell( fh ) - offset;
+				return (SIZE_T)ftell( fh ) - offset;
 			else
 				PrintLastError(L"Seek failed.");
 		}
@@ -146,7 +146,7 @@ public:
 
 
 
-class process_stream : stream_wrapper
+class process_stream : public stream_wrapper
 {
 	bool opened;
 	HANDLE ph;
@@ -182,8 +182,8 @@ class process_stream : stream_wrapper
 public:
 	void* base;
 
-
 	process_stream(HANDLE ph, void* base)
+		:base(NULL)
 	{
 		_long_name = NULL;
 		_short_name = NULL;
@@ -200,12 +200,11 @@ public:
 
 	process_stream(HANDLE ph, void* base, module_list* modules )
 	{
-		_long_name = NULL;
-		_short_name = NULL;
 		init( ph, base, modules );
 	}
 
 	process_stream(DWORD pid, module_list* modules)
+		:base(NULL)
 	{
 		_long_name = NULL;
 		_short_name = NULL;
@@ -247,6 +246,7 @@ public:
 	}
 
 	process_stream(DWORD pid, void* base, module_list* modules )
+		:base(NULL)
 	{
 		// Try to open the specified process pid
 		_long_name = NULL;
@@ -268,17 +268,16 @@ public:
 
 	virtual SIZE_T get_location( char* out_name, SIZE_T out_name_size )
 	{
-		char* hex = new char[16 + 2 + 1]; // Max space required
-		int hexLength = sprintf( hex, "0x%llX", (__int64) this->base );
+		char hex[16 + 2 + 1]; // Max space required
+		SIZE_T hexLength = sprintf( hex, "0x%llX", (__int64) this->base );
 
 		if( hexLength < out_name_size )
 		{
 			memcpy( out_name, hex, hexLength );
 			out_name[hexLength] = 0;
-			delete[] hex;
 			return hexLength;
 		}
-		delete[] hex;
+
 		return 0;
 	}
 
@@ -322,12 +321,12 @@ public:
 
 			if( blockSize == sizeof(_MEMORY_BASIC_INFORMATION64) )
 			{
-				return mbi.RegionSize - offset;
+				return (SIZE_T)(mbi.RegionSize - offset);
 			}
 			else if(  blockSize == sizeof(_MEMORY_BASIC_INFORMATION32) )
 			{
 				_MEMORY_BASIC_INFORMATION32* mbi32 = (_MEMORY_BASIC_INFORMATION32*) &mbi;
-				return mbi32->RegionSize - offset;
+				return (SIZE_T)mbi32->RegionSize - offset;
 			}
 			else if( blockSize == 0 )
 			{
@@ -343,7 +342,7 @@ public:
 		if( opened )
 		{
 			_MEMORY_BASIC_INFORMATION64 mbi;
-			__int64 blockSize = VirtualQueryEx(ph, (LPCVOID) ((unsigned char*)base + (SIZE_T)offset), (_MEMORY_BASIC_INFORMATION*) &mbi, sizeof(_MEMORY_BASIC_INFORMATION64));
+			SIZE_T blockSize = VirtualQueryEx(ph, (LPCVOID) ((unsigned char*)base + (SIZE_T)offset), (_MEMORY_BASIC_INFORMATION*) &mbi, sizeof(_MEMORY_BASIC_INFORMATION64));
 
 			if( blockSize == sizeof(_MEMORY_BASIC_INFORMATION64) )
 			{
@@ -367,13 +366,13 @@ public:
 		return characteristics;
 	}
 
-	virtual __int64 estimate_section_size( long offset )
+	virtual __int64 estimate_section_size( SIZE_T offset )
 	{
 		// Estimate the section size according to the heap size and privilege level
 		if( opened )
 		{
 			_MEMORY_BASIC_INFORMATION64 mbi;
-			__int64 blockSize = VirtualQueryEx(ph, (LPCVOID) ((unsigned char*)base + (SIZE_T)offset), (_MEMORY_BASIC_INFORMATION*) &mbi, sizeof(_MEMORY_BASIC_INFORMATION64));
+			SIZE_T blockSize = VirtualQueryEx(ph, (LPCVOID) ((unsigned char*)base + offset), (_MEMORY_BASIC_INFORMATION*) &mbi, sizeof(_MEMORY_BASIC_INFORMATION64));
 
 			if( blockSize == sizeof(_MEMORY_BASIC_INFORMATION64) )
 			{
@@ -414,7 +413,7 @@ public:
 
 		SIZE_T num_read = 0;
 
-		__int64 already_read = 0;
+		SIZE_T already_read = 0;
 
 		if( opened )
 		{
@@ -436,7 +435,7 @@ public:
 							success = ReadProcessMemory( ph,
 																(LPCVOID) (start_address),
 																(void*)((__int64) output + already_read),
-																mbi.RegionSize,
+																(SIZE_T)mbi.RegionSize,
 																&num_read);
 							already_read += mbi.RegionSize;
 							*out_read += num_read;
@@ -447,7 +446,7 @@ public:
 							success = ReadProcessMemory( ph,
 																	(LPCVOID) (start_address),
 																	(void*)((__int64) output + already_read),
-																	size - already_read,
+																	(SIZE_T)(size - already_read),
 																	&num_read);
 								already_read += size - already_read;
 								*out_read += num_read;
@@ -467,7 +466,7 @@ public:
 						// Read in this whole or part of this region
 						bool success;
 
-						if( start_address + size - already_read >= mbi32->BaseAddress + mbi32->RegionSize )
+						if( start_address + size - already_read >= (SIZE_T)mbi32->BaseAddress + mbi32->RegionSize )
 						{
 							// Read in the whole region
 							success = ReadProcessMemory( ph,
@@ -484,7 +483,7 @@ public:
 							success = ReadProcessMemory( ph,
 																	(LPCVOID) (start_address),
 																	(void*)((__int64) output + already_read),
-																	size - already_read,
+																	(SIZE_T)(size - already_read),
 																	&num_read);
 								already_read += size - already_read;
 								*out_read += num_read;
@@ -521,7 +520,6 @@ public:
 			if( _short_name != NULL )
 				delete[] _short_name;
 		}
-		
 	}
 };
 

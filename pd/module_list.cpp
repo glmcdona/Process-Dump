@@ -3,11 +3,13 @@
 
 
 module_list::module_list()
+	:_ph(NULL)
 {
 	// Empty list
 }
 
 module_list::module_list( DWORD pid )
+	: _ph(NULL)
 {
 	#if defined(_WIN64)
 	// List modules on a 64 bit machine. A 64 bit machine is assumed to be Windows Vista+

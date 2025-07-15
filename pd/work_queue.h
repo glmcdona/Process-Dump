@@ -77,7 +77,7 @@ class Queue
   int count()
   {
 	  std::unique_lock<std::mutex> mlock(mutex_);
-	  int count = queue_.size();
+	  int count = (int)queue_.size();
 	  mlock.unlock();
 	  return count;
   }

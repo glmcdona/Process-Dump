@@ -4,7 +4,6 @@
 #include <strsafe.h>
 #include <string>
 #include <iostream>
-#include "windows.h"
 #include <tlhelp32.h>
 #include <Psapi.h>
 #include <regex>
@@ -29,9 +28,18 @@ public:
 	char* output_path;
 
 	PD_OPTIONS()
+		: ImportRec(false)
+		, ForceGenHeader(false)
+		, Verbose(false)
+		, ReconstructHeaderAsDll(false)
+		, DumpChunks(false)
+		, EntryPointHash(false)
+		, ForceReconstructEntryPoint(false)
+		, NumberOfThreads(0)
+		, EntryPointOverride(0)
 	{
 		output_path = new char[1];
-		strcpy(output_path,"");
+		output_path[0] = 0;
 	}
 
 	void set_output_path( char* path )
@@ -46,9 +54,7 @@ public:
 	~PD_OPTIONS()
 	{
 		if( output_path != NULL )
-		{
 			delete[] output_path;
-		}
 	}
 };
 
@@ -71,6 +77,6 @@ public:
 	}
 };
 
-DWORD process_find(string match_regex, DynArray<process_description*>* result);
+DWORD process_find(string match_regex, DynArray<process_description*>& result);
 string ExePath();
 void PrintLastError(LPTSTR lpszFunction); 

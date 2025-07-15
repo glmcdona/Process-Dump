@@ -1,9 +1,8 @@
 #pragma once
 
-#include "nmd_assembly.h"
 #include "stdafx.h"
+#include "nmd_assembly.h"
 #include <stdio.h>
-#include "windows.h"
 #include "stream_wrapper.h"
 #include <stdlib.h>
 #include "module_list.h"
@@ -48,7 +47,6 @@ struct IMPORT_SUMMARY
 
 class pe_header
 {
-	
 	unsigned __int64 _unique_hash;
 	unsigned __int64 _unique_hash_ep;
 	unsigned __int64 _unique_hash_ep_short;
@@ -111,6 +109,8 @@ class pe_header
 	DWORD _section_align( DWORD address, DWORD alignment);
 	__int64 _section_align( __int64 address, DWORD alignment);
 
+	void reset();
+
 public:
 	pe_header( char* filename, PD_OPTIONS* options );
 	pe_header( DWORD pid, void* base, module_list* modules, PD_OPTIONS* options );
@@ -136,7 +136,7 @@ public:
 	unsigned __int64 get_hash_ep_short();
 
 	IMPORT_SUMMARY get_imports_information( export_list* exports );
-	IMPORT_SUMMARY get_imports_information( export_list* exports, __int64 size_limit );
+	IMPORT_SUMMARY get_imports_information( export_list* exports, SIZE_T size_limit );
 
 	bool write_image( char* filename );
 

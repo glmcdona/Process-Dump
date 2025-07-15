@@ -15,7 +15,7 @@ bool pe_hash_database::_is_mz(FILE* stream)
 
 pe_hash_database::pe_hash_database(char* clean_database_name, char* ep_database_name, char* epshort_database_name)
 {
-	InitializeCriticalSectionAndSpinCount(&_lock, 0x00000400);
+	(void)InitializeCriticalSectionAndSpinCount(&_lock, 0x00000400);
 	EnterCriticalSection( &_lock );
 
 	// Build the full database names
@@ -48,7 +48,7 @@ pe_hash_database::pe_hash_database(char* clean_database_name, char* ep_database_
 		}
 		fclose(fh);
 
-		printf("Loaded %i clean hashes from database.\n", _clean_hashes.size());
+		printf("Loaded %zu clean hashes from database.\n", _clean_hashes.size());
 	}
 	else
 	{
@@ -79,7 +79,7 @@ pe_hash_database::pe_hash_database(char* clean_database_name, char* ep_database_
 		}
 		fclose(fh);
 
-		printf("Loaded %i entrypoint hashes from database.\n", _ep_hashes.size());
+		printf("Loaded %zu entrypoint hashes from database.\n", _ep_hashes.size());
 	}
 	else
 	{
@@ -111,7 +111,7 @@ pe_hash_database::pe_hash_database(char* clean_database_name, char* ep_database_
 		}
 		fclose(fh);
 
-		printf("Loaded %i entrypoint short hashes from database.\n", _epshort_hashes.size());
+		printf("Loaded %zu entrypoint short hashes from database.\n", _epshort_hashes.size());
 	}
 	else
 	{
@@ -133,7 +133,7 @@ pe_hash_database::pe_hash_database(char* clean_database_name, char* ep_database_
 int pe_hash_database::count()
 {
 	EnterCriticalSection( &_lock );
-	int result = _clean_hashes.size();
+	int result = (int)_clean_hashes.size();
 	LeaveCriticalSection( &_lock );
 	return result;
 }
@@ -141,7 +141,7 @@ int pe_hash_database::count()
 int pe_hash_database::count_eps()
 {
 	EnterCriticalSection(&_lock);
-	int result = _ep_hashes.size();
+	int result = (int)_ep_hashes.size();
 	LeaveCriticalSection(&_lock);
 	return result;
 }
@@ -149,7 +149,7 @@ int pe_hash_database::count_eps()
 int pe_hash_database::count_epshorts()
 {
 	EnterCriticalSection(&_lock);
-	int result = _epshort_hashes.size();
+	int result = (int)_epshort_hashes.size();
 	LeaveCriticalSection(&_lock);
 	return result;
 }
@@ -229,7 +229,7 @@ bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursive
 
 					if (result != NULL)
 					{
-						for (int i = 0; i < strlen(ent->d_name); i++)
+						for (size_t i = 0; i < strlen(ent->d_name); i++)
 							result[i] = ent->d_name[i];
 						result[strlen(ent->d_name)] = 0;
 
@@ -253,7 +253,7 @@ bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursive
 							if (PathMatchSpec(result, filter))
 							{
 								// Process this file
-								int length = wcslen(result) + strlen(dir_name_expanded) + 1;
+								size_t length = wcslen(result) + strlen(dir_name_expanded) + 1;
 								char* filename = new char[length + 1];
 								filename[length] = 0;
 								sprintf(filename, "%s\\%S", dir_name_expanded, result);
@@ -282,7 +282,7 @@ bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursive
 					}
 					else
 					{
-						fprintf(stderr, "Failed to allocate memory block of size %i for filename: %s.\n", ent->d_namlen + 1, strerror(errno));
+						fprintf(stderr, "Failed to allocate memory block of size %zu for filename: %s.\n", ent->d_namlen + 1, strerror(errno));
 					}
 				}
 				closedir(dir);
@@ -300,7 +300,7 @@ bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursive
 bool pe_hash_database::remove_folder( char* dir_name, WCHAR* filter, bool recursively )
 {
 	// Expand the environment names in the directory
-	char* dir_name_expanded = new char[1000];
+	char dir_name_expanded[1000];
 	ExpandEnvironmentStringsA( dir_name, dir_name_expanded, 1000 );
 
 
@@ -316,7 +316,7 @@ bool pe_hash_database::remove_folder( char* dir_name, WCHAR* filter, bool recurs
 
 			if( result != NULL )
 			{
-				for( int i = 0; i < ent->d_namlen; i++ )
+				for( size_t i = 0; i < ent->d_namlen; i++ )
 					result[i] = ent->d_name[i];
 				result[ent->d_namlen] = 0;
 
@@ -339,7 +339,7 @@ bool pe_hash_database::remove_folder( char* dir_name, WCHAR* filter, bool recurs
 					if( PathMatchSpec( result, filter ) )
 					{
 						// Process this file
-						int length = wcslen(result) + strlen(dir_name_expanded) + 1;
+						size_t length = wcslen(result) + strlen(dir_name_expanded) + 1;
 						char* filename = new char[length + 1];
 						filename[length] = 0;
 						sprintf( filename, "%s\\%S", dir_name_expanded, result );
@@ -367,7 +367,7 @@ bool pe_hash_database::remove_folder( char* dir_name, WCHAR* filter, bool recurs
 			}
 			else
 			{
-				fprintf(stderr, "Failed to allocate memory block of size %i for filename: %s.\n", ent->d_namlen + 1, strerror(errno));
+				fprintf(stderr, "Failed to allocate memory block of size %zu for filename: %s.\n", ent->d_namlen + 1, strerror(errno));
 			}
 		}
 		closedir (dir);
@@ -400,28 +400,24 @@ bool pe_hash_database::add_file(char* file)
 	options.ForceGenHeader = false;
 	options.ImportRec = false;
 	options.Verbose = false;
-	pe_header* header = new pe_header(file, &options);
+	pe_header header(file, &options);
 	unsigned __int64 hash = 0;
 	unsigned __int64 hash_ep = 0;
 	unsigned __int64 hash_ep_short = 0;
-	header->process_pe_header();
-	header->process_sections();
+	header.process_pe_header();
+	header.process_sections();
 	
-	if( header->somewhat_parsed() )
+	if( header.somewhat_parsed() )
 	{
-		hash = header->get_hash();
-		hash_ep = header->get_hash_ep();
-		hash_ep_short = header->get_hash_ep_short();
+		hash = header.get_hash();
+		hash_ep = header.get_hash_ep();
+		hash_ep_short = header.get_hash_ep_short();
 	}
 	else
 	{
 		printf("Failed to parse PE header for %s.\n", file);
-		delete header;
 		return false;
 	}
-	
-	
-	delete header;
 
 	// Add the entrypoint hash
 	if (hash_ep != 0)
@@ -471,16 +467,15 @@ bool pe_hash_database::remove_file(char* file)
 	options.ForceGenHeader = false;
 	options.ImportRec = false;
 	options.Verbose = false;
-	pe_header* header = new pe_header(file, &options);
-	header->process_pe_header();
-	header->process_sections();
+	pe_header header(file, &options);
+	header.process_pe_header();
+	header.process_sections();
 	
 	unsigned __int64 hash = 0;
-	if( header->somewhat_parsed() )
+	if( header.somewhat_parsed() )
 	{
-		hash = header->get_hash();
+		hash = header.get_hash();
 	}
-	delete header;
 
 	if( hash != 0 )
 	{
@@ -517,7 +512,7 @@ bool pe_hash_database::save()
 		fclose(fh);
 		LeaveCriticalSection(&_lock);
 
-		printf("Wrote to entrypoint hash database. It now has a total of %i entrypoint hashes.\n", _ep_hashes.size());
+		printf("Wrote to entrypoint hash database. It now has a total of %zu entrypoint hashes.\n", _ep_hashes.size());
 	}
 	else
 	{
@@ -539,7 +534,7 @@ bool pe_hash_database::save()
 		fclose(fh);
 		LeaveCriticalSection(&_lock);
 
-		printf("Wrote to entrypoint short hash database. It now has a total of %i entrypoint short hashes.\n", _epshort_hashes.size());
+		printf("Wrote to entrypoint short hash database. It now has a total of %zu entrypoint short hashes.\n", _epshort_hashes.size());
 	}
 	else
 	{
@@ -561,7 +556,7 @@ bool pe_hash_database::save()
 		fclose(fh);
 		LeaveCriticalSection( &_lock );
 
-		printf("Wrote to clean hash database. It now has a total of %i clean hashes.\n", _clean_hashes.size());
+		printf("Wrote to clean hash database. It now has a total of %zu clean hashes.\n", _clean_hashes.size());
 		return true;
 	}
 	else
@@ -569,13 +564,15 @@ bool pe_hash_database::save()
 		PrintLastError(L"Failed to open existing clean hash database..");
 	}
 
-	
 	return false;
 }
 
 pe_hash_database::~pe_hash_database(void)
 {
 	delete[] _clean_database_path;
+	delete[] _ep_database_path;
+	delete[] _epshort_database_path;
+
 	DeleteCriticalSection(&_lock);
 }
 
