@@ -243,6 +243,129 @@ namespace
 			}
 		}
 	}
+
+	template<typename NT>
+	void import_section_contents(bool win64, bool has_lookup)
+	{
+		auto image = mapped_fixture(win64, 0x3000);
+		auto& header = nt<NT>(image);
+		header.OptionalHeader.SizeOfImage = static_cast<DWORD>(image.size());
+		sections<NT>(image)[0].Misc.VirtualSize = 0x2000;
+		header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT] = {0x1800, 40};
+		memset(image.data() + 0x1800, 0, 0x400);
+		auto& descriptor = *reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(image.data() + 0x1800);
+		descriptor.Name = 0x1900;
+		descriptor.FirstThunk = 0x1b00;
+		descriptor.OriginalFirstThunk = has_lookup ? 0x1a00 : 0;
+		memcpy(image.data() + 0x1900, "example.dll", sizeof("example.dll"));
+		memcpy(image.data() + 0x1922, "ExampleFunction", sizeof("ExampleFunction"));
+		const SIZE_T width = win64 ? 8 : 4;
+		const unsigned __int64 lookup[] = {0x1920, (win64 ? IMAGE_ORDINAL_FLAG64 : IMAGE_ORDINAL_FLAG32) | 7, 0};
+		const unsigned __int64 resolved[] = {win64 ? 0x7fff12345678ULL : 0x72345678ULL,
+			win64 ? 0x7fff23456789ULL : 0x73456789ULL, has_lookup ? 0x76543210ULL : 0};
+		for (int i = 0; i < 3; ++i)
+		{
+			memcpy(image.data() + 0x1a00 + i * width, &lookup[i], width);
+			memcpy(image.data() + 0x1b00 + i * width, &resolved[i], width);
+		}
+		auto expected = image;
+		if (has_lookup)
+			memcpy(expected.data() + 0x1b00, expected.data() + 0x1a00, 3 * width);
+		for (bool imports : {false, true})
+		{
+			auto dump = reconstruct(image, imports);
+			const auto& section = sections<NT>(dump)[0];
+			require(section.Misc.VirtualSize == 0x2000, "original section size changed");
+			for (SIZE_T i = 0; i < 0x2000; ++i)
+			{
+				const unsigned char actual = i < section.SizeOfRawData ? dump[section.PointerToRawData + i] : 0;
+				require(actual == expected[0x1000 + i],
+					has_lookup ? "section content differs from complete pointer-width IAT restoration" :
+					"missing OriginalFirstThunk corrupted section bytes using DOS header data");
+			}
+		}
+	}
+
+	template<typename NT>
+	void truncated_lookup_preserves_content(bool win64)
+	{
+		const DWORD width = win64 ? 8 : 4;
+		const DWORD locations[][2] = {{0x3000 - width, 0x1b00}, {0x1a00, 0x3000 - width},
+			{0x1a00, 0x1a00 + width}, {0x1a00, 0x1a00}};
+		for (const auto& location : locations)
+		{
+			auto image = mapped_fixture(win64, 0x3000);
+			auto& header = nt<NT>(image);
+			header.OptionalHeader.SizeOfImage = static_cast<DWORD>(image.size());
+			sections<NT>(image)[0].Misc.VirtualSize = 0x2000;
+			header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT] = {0x1800, 40};
+			memset(image.data() + 0x1800, 0, 0x400);
+			auto& descriptor = *reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(image.data() + 0x1800);
+			descriptor.Name = 0x1900;
+			descriptor.OriginalFirstThunk = location[0];
+			descriptor.FirstThunk = location[1];
+			memcpy(image.data() + 0x1900, "example.dll", sizeof("example.dll"));
+			const unsigned __int64 lookup = 0x1920, resolved = 0x76543210;
+			memcpy(image.data() + descriptor.OriginalFirstThunk, &lookup, width);
+			memcpy(image.data() + descriptor.FirstThunk, &resolved, width);
+			auto dump = reconstruct(image, false);
+			const auto& section = sections<NT>(dump)[0];
+			for (SIZE_T i = 0; i < 0x2000; ++i)
+			{
+				const unsigned char actual = i < section.SizeOfRawData ? dump[section.PointerToRawData + i] : 0;
+				require(actual == image[0x1000 + i], "truncated, overlapping or shared thunks rewrote section contents");
+			}
+		}
+	}
+
+	template<typename NT>
+	void repeated_import_fixups(bool win64)
+	{
+		auto image = mapped_fixture(win64, 0x3000);
+		auto& header = nt<NT>(image);
+		header.OptionalHeader.SizeOfImage = static_cast<DWORD>(image.size());
+		sections<NT>(image)[0].Misc.VirtualSize = 0x2000;
+		header.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT] = {0x1800, 40};
+		memset(image.data() + 0x1800, 0, 0x400);
+		auto& descriptor = *reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(image.data() + 0x1800);
+		descriptor.Name = 0x1900;
+		descriptor.FirstThunk = 0x1b00;
+		descriptor.OriginalFirstThunk = 0x1a00;
+		memcpy(image.data() + 0x1900, "example.dll", sizeof("example.dll"));
+		memcpy(image.data() + 0x1922, "ExampleFunction", sizeof("ExampleFunction"));
+		const SIZE_T width = win64 ? 8 : 4;
+		const unsigned __int64 name = 0x1920, address = 0x12345678, relocated_address = 0x76543210;
+		memcpy(image.data() + 0x1a00, &name, width);
+		const DWORD fixups[] = {0x1100, static_cast<DWORD>(0x1100 + width), 0x1b00};
+		for (DWORD rva : fixups)
+			memcpy(image.data() + rva, &address, width);
+		auto dump = reconstruct(image, true);
+		const auto directory = nt<NT>(dump).OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+		require(directory.Size == 4 * sizeof(IMAGE_IMPORT_DESCRIPTOR), "per-location repeated imports were removed");
+		unsigned int patched = 0;
+		for (SIZE_T i = 0; i < 3; ++i)
+		{
+			const auto& entry = *reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
+				dump.data() + file_offset<NT>(dump, directory.VirtualAddress) + i * sizeof(IMAGE_IMPORT_DESCRIPTOR));
+			const SIZE_T lookup_offset = file_offset<NT>(dump, entry.OriginalFirstThunk);
+			unsigned __int64 lookup = 0;
+			memcpy(&lookup, dump.data() + lookup_offset, width);
+			const SIZE_T symbol = file_offset<NT>(dump, static_cast<DWORD>(lookup) + 2);
+			require(memcmp(dump.data() + symbol, "ExampleFunction", sizeof("ExampleFunction")) == 0,
+				"repeated reference changed import identity");
+			require(entry.FirstThunk == 0x1100 || entry.FirstThunk == 0x1100 + width || entry.FirstThunk == 0x1b00,
+				"import fixup targets the wrong location");
+			memcpy(dump.data() + file_offset<NT>(dump, entry.FirstThunk), &relocated_address, width);
+			++patched;
+		}
+		require(patched == 3, "original IAT or repeated-reference fixup missing");
+		for (DWORD rva : fixups)
+		{
+			unsigned __int64 value = 0;
+			memcpy(&value, dump.data() + file_offset<NT>(dump, rva), width);
+			require(value == relocated_address, "loader-style rebinding did not repair every reference");
+		}
+	}
 }
 
 void append_reconstruction_tests(std::vector<test_case>& tests)
@@ -265,4 +388,12 @@ void append_reconstruction_tests(std::vector<test_case>& tests)
 	tests.push_back({"pe64-terminal-import", [] { terminal_import<IMAGE_NT_HEADERS64>(true); }});
 	tests.push_back({"pe32-layout-matrix", [] { layout_matrix<IMAGE_NT_HEADERS32>(false); }});
 	tests.push_back({"pe64-layout-matrix", [] { layout_matrix<IMAGE_NT_HEADERS64>(true); }});
+	tests.push_back({"pe32-import-section-content", [] { import_section_contents<IMAGE_NT_HEADERS32>(false, true); }});
+	tests.push_back({"pe64-import-section-content", [] { import_section_contents<IMAGE_NT_HEADERS64>(true, true); }});
+	tests.push_back({"pe32-no-lookup-section-content", [] { import_section_contents<IMAGE_NT_HEADERS32>(false, false); }});
+	tests.push_back({"pe64-no-lookup-section-content", [] { import_section_contents<IMAGE_NT_HEADERS64>(true, false); }});
+	tests.push_back({"pe32-truncated-lookup-content", [] { truncated_lookup_preserves_content<IMAGE_NT_HEADERS32>(false); }});
+	tests.push_back({"pe64-truncated-lookup-content", [] { truncated_lookup_preserves_content<IMAGE_NT_HEADERS64>(true); }});
+	tests.push_back({"pe32-repeated-import-fixups", [] { repeated_import_fixups<IMAGE_NT_HEADERS32>(false); }});
+	tests.push_back({"pe64-repeated-import-fixups", [] { repeated_import_fixups<IMAGE_NT_HEADERS64>(true); }});
 }

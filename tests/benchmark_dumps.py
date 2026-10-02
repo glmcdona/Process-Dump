@@ -16,6 +16,7 @@ import struct
 import subprocess
 import tempfile
 import time
+from pe_quality import compare_quality, snapshot_sections
 
 
 MAX_IMAGE = 256 * 1024 * 1024
@@ -113,7 +114,7 @@ def compare_reports(before, after):
             regressions.append(dict(pid=row["pid"], name=row["name"], status=row["status"]))
         if row["status"] == "ok" and old["original"]["sha256"] == row["original"]["sha256"]:
             pairs.append((old, row))
-    return dict(
+    result = dict(
         comparable_processes=len(pairs), dump_regressions=regressions,
         before_bytes=sum(old["dump"]["bytes"] for old, _ in pairs),
         after_bytes=sum(new["dump"]["bytes"] for _, new in pairs),
@@ -123,6 +124,22 @@ def compare_reports(before, after):
         after_lost_code_blocks=sum(new["lost_code_blocks"] for _, new in pairs),
         before_median_seconds=statistics.median(old["seconds"] for old, _ in pairs) if pairs else None,
         after_median_seconds=statistics.median(new["seconds"] for _, new in pairs) if pairs else None)
+    quality_pairs = [(a["quality"], b["quality"]) for a, b in pairs if "quality" in a and "quality" in b]
+    if quality_pairs:
+        matched = [(a, b) for a, b in quality_pairs if a["matching_file_layout"] and b["matching_file_layout"]]
+        witnessed = [(a["memory_witness"], b["memory_witness"]) for a, b in matched
+                     if a["memory_witness"] is not None and b["memory_witness"] is not None]
+        result["quality"] = dict(
+            compared_images=len(quality_pairs),
+            matching_layout_images=len(matched),
+            before_iat_different_slots=sum(a["iat"]["different_slots"] for a, _ in matched),
+            after_iat_different_slots=sum(b["iat"]["different_slots"] for _, b in matched),
+            before_duplicate_iat_slots=sum(a["duplicate_iat_slots"] for a, _ in quality_pairs),
+            after_duplicate_iat_slots=sum(b["duplicate_iat_slots"] for _, b in quality_pairs),
+            witnessed_images=len(witnessed),
+            before_stable_memory_differences=sum(a["stable_different_bytes"] for a, _ in witnessed),
+            after_stable_memory_differences=sum(b["stable_different_bytes"] for _, b in witnessed))
+    return result
 
 
 def snapshot():
@@ -204,6 +221,10 @@ def benchmark_running(entry, args, root):
                    "-o", str(folder), "-db", "ignore", "-nep", "-nc", "-nt", "-nh", "-v"]
         if not args.imports:
             command.append("-ni")
+        try:
+            witness_before = snapshot_sections(entry, source) if args.quality and args.memory_witness else None
+        except (OSError, ValueError) as error:
+            return dict(row, status="witness_unavailable", reason=str(error))
         start = time.perf_counter()
         try:
             result = subprocess.run(command, cwd=folder, capture_output=True,
@@ -221,6 +242,17 @@ def benchmark_running(entry, args, root):
             output = file_metrics(files[0])
             row.update(dump=output, size_ratio=output["bytes"] / source["bytes"],
                        **compare_code(original, files[0], source, output))
+            if args.quality:
+                try:
+                    with original.open("rb") as first, files[0].open("rb") as second, \
+                            mmap.mmap(first.fileno(), 0, access=mmap.ACCESS_READ) as source_bytes, \
+                            mmap.mmap(second.fileno(), 0, access=mmap.ACCESS_READ) as dump_bytes:
+                        row["quality"] = compare_quality(source_bytes, dump_bytes, source, output)
+                        if witness_before is not None and row["quality"]["matching_file_layout"]:
+                            row["quality"] = compare_quality(source_bytes, dump_bytes, source, output, witness_before,
+                                                             snapshot_sections(entry, source))
+                except (ValueError, struct.error) as error:
+                    return dict(row, status="quality_unavailable", reason=str(error))
         except OSError as error:
             return dict(row, status="analysis_unavailable", reason=str(error))
         except (ValueError, struct.error) as error:
@@ -228,6 +260,11 @@ def benchmark_running(entry, args, root):
         row["status"] = "ok"
         row["suspect"] = bool(output["problems"] or row["lost_code_blocks"] or
                               (row["size_ratio"] > 4 and output["zero_fraction"] > 0.75))
+        if "quality" in row:
+            quality = row["quality"]
+            row["suspect"] |= bool(quality["import_errors"] or quality["directory_errors"] or
+                                   (quality["matching_file_layout"] and quality["iat"]["different_slots"]) or
+                                   (quality["memory_witness"] or {}).get("stable_different_bytes"))
         return row
 
 
@@ -242,6 +279,10 @@ def main():
                         help="record an exclusion, e.g. a dump already blocked by security software")
     parser.add_argument("--name", help="case-insensitive process-name substring")
     parser.add_argument("--imports", action="store_true", help="enable aggressive import reconstruction")
+    parser.add_argument("--quality", action="store_true", help="compare RVA bytes and PE directories in detail")
+    parser.add_argument("--memory-witness", action="store_true",
+                        help="independently read sections pagewise before/after dumping (requires --quality)")
+    parser.add_argument("--unique-originals", action="store_true", help="one process per original path for a bounded corpus")
     parser.add_argument("--timeout", type=float, default=30, help="seconds per dumper child")
     args = parser.parse_args()
     args.exe = args.exe.resolve(strict=True)
@@ -250,12 +291,24 @@ def main():
         parser.error("report already exists; choose a new path")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.memory_witness and not args.quality:
+        parser.error("--memory-witness requires --quality")
     inventory = json.loads(args.snapshot.read_text(encoding="utf-8"))["inventory"] if args.snapshot else snapshot()
     selected = [p for p in inventory if (not args.pid or p["pid"] in args.pid) and
                 (not args.name or args.name.lower() in p["name"].lower())]
+    if args.unique_originals:
+        seen, unique = set(), []
+        for entry in selected:
+            identity = entry.get("path", "").lower()
+            if identity and identity not in seen and entry["pid"] not in args.skip_pid:
+                unique.append(entry)
+                seen.add(identity)
+        selected = unique
     report = dict(schema=1, created=datetime.now(timezone.utc).isoformat(),
                   executable=str(args.exe), executable_sha256=hashlib.sha256(args.exe.read_bytes()).hexdigest(),
-                  imports=args.imports, excluded_pids=args.skip_pid, inventory=inventory, results=[])
+                  imports=args.imports, quality=args.quality, memory_witness=args.memory_witness,
+                  unique_originals=args.unique_originals,
+                  excluded_pids=args.skip_pid, inventory=inventory, results=[])
     previous = json.loads(args.compare.read_text(encoding="utf-8")) if args.compare else None
     if previous and previous["imports"] != args.imports:
         parser.error("--compare must have the same import reconstruction setting")

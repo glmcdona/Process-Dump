@@ -1814,17 +1814,31 @@ bool pe_header::process_import_directory( )
 	{
 		SIZE_T destination = _header_import_descriptors[i].FirstThunk;
 		SIZE_T source = _header_import_descriptors[i].OriginalFirstThunk;
-		// Preserve the existing DWORD-at-a-time reconstruction for both formats.
-		while (range_fits(_image_size, destination, sizeof(IMAGE_THUNK_DATA32)) &&
-			range_fits(_image_size, source, sizeof(IMAGE_THUNK_DATA32)))
+		if (source == 0 || destination == 0 || source == destination)
+			continue;
+		const SIZE_T width = _parsed_pe_64 ? sizeof(IMAGE_THUNK_DATA64) : sizeof(IMAGE_THUNK_DATA32);
+		SIZE_T length = 0;
+		bool terminated = false;
+		while (range_fits(_image_size, source, length) &&
+			range_fits(_image_size - source, length, width))
 		{
-			if (*reinterpret_cast<DWORD*>(_image + destination) == 0 ||
-				*reinterpret_cast<DWORD*>(_image + source) == 0)
+			unsigned __int64 value = 0;
+			memcpy(&value, _image + source + length, width);
+			length += width;
+			if (value == 0)
+			{
+				terminated = true;
 				break;
-			memmove(_image + destination, _image + source, sizeof(IMAGE_THUNK_DATA32));
-			destination += sizeof(IMAGE_THUNK_DATA32);
-			source += sizeof(IMAGE_THUNK_DATA32);
+			}
 		}
+		if (!terminated || !range_fits(_image_size, destination, length) ||
+			(source < destination + length && destination < source + length))
+		{
+			fprintf(stderr, "WARNING: Invalid or overlapping import thunks in '%s'; preserving captured IAT bytes.\n", get_name());
+			continue;
+		}
+		// Copy complete pointer-sized entries, including the terminator, only after validating both tables.
+		memcpy(_image + destination, _image + source, length);
 	}
 	return true;
 }
