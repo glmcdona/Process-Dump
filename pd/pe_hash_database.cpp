@@ -381,17 +381,26 @@ bool pe_hash_database::remove_folder( char* dir_name, WCHAR* filter, bool recurs
 
 bool pe_hash_database::contains(unsigned __int64 hash)
 {
-	return _clean_hashes.count( hash ) != 0;
+	EnterCriticalSection(&_lock);
+	const bool found = _clean_hashes.count(hash) != 0;
+	LeaveCriticalSection(&_lock);
+	return found;
 }
 
 bool pe_hash_database::contains_ep(unsigned __int64 hash)
 {
-	return _ep_hashes.count(hash) != 0;
+	EnterCriticalSection(&_lock);
+	const bool found = _ep_hashes.count(hash) != 0;
+	LeaveCriticalSection(&_lock);
+	return found;
 }
 
 bool pe_hash_database::contains_epshort(unsigned __int64 hash)
 {
-	return _epshort_hashes.count(hash) != 0;
+	EnterCriticalSection(&_lock);
+	const bool found = _epshort_hashes.count(hash) != 0;
+	LeaveCriticalSection(&_lock);
+	return found;
 }
 
 bool pe_hash_database::add_file(char* file)
@@ -576,6 +585,7 @@ bool pe_hash_database::save()
 pe_hash_database::~pe_hash_database(void)
 {
 	delete[] _clean_database_path;
+	delete[] _ep_database_path;
+	delete[] _epshort_database_path;
 	DeleteCriticalSection(&_lock);
 }
-

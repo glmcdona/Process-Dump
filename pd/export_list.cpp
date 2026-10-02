@@ -200,7 +200,7 @@ namespace
 	}
 }
 
-bool export_list::add_exports(unsigned char* image, SIZE_T image_size, unsigned __int64 image_base, IMAGE_EXPORT_DIRECTORY* export_directory, bool is64)
+bool export_list::add_exports(unsigned char* image, SIZE_T image_size, unsigned __int64 image_base, IMAGE_EXPORT_DIRECTORY* export_directory, bool is64, DWORD directory_size)
 {
 	if (image == NULL || export_directory == NULL ||
 		!test_read(image, image_size, reinterpret_cast<unsigned char*>(export_directory), sizeof(*export_directory)))
@@ -208,6 +208,9 @@ bool export_list::add_exports(unsigned char* image, SIZE_T image_size, unsigned 
 
 	IMAGE_EXPORT_DIRECTORY directory;
 	memcpy(&directory, export_directory, sizeof(directory));
+	const SIZE_T directory_rva = reinterpret_cast<unsigned char*>(export_directory) - image;
+	if (directory_size != 0 && (directory_size < sizeof(directory) || !range_fits(image_size, directory_rva, directory_size)))
+		return false;
 	if (!export_array_fits(image_size, directory.AddressOfFunctions, directory.NumberOfFunctions, sizeof(DWORD)) ||
 		!export_array_fits(image_size, directory.AddressOfNames, directory.NumberOfNames, sizeof(DWORD)) ||
 		!export_array_fits(image_size, directory.AddressOfNameOrdinals, directory.NumberOfNames, sizeof(WORD)))
@@ -225,6 +228,22 @@ bool export_list::add_exports(unsigned char* image, SIZE_T image_size, unsigned 
 		return false;
 	}
 
+	export_list parsed;
+	const auto add_function = [&](DWORD index, const char* name) {
+		DWORD rva;
+		memcpy(&rva, image + directory.AddressOfFunctions + static_cast<SIZE_T>(index) * sizeof(DWORD), sizeof(rva));
+		if (rva == 0)
+			return true;
+		// EAT entries inside the export directory name a forwarder, not executable/data addresses.
+		if (directory_size != 0 && rva >= directory_rva && rva - directory_rva < directory_size)
+			return true;
+		// Loaded export tables can redirect functions outside their own module (for example WOW64 USER32).
+		if (image_base > _UI64_MAX - rva || index > MAXWORD || directory.Base > MAXWORD - index)
+			return false;
+		export_entry entry(library_name.c_str(), name, static_cast<WORD>(directory.Base + index), rva, image_base + rva, is64);
+		parsed.add_export(entry.address, &entry);
+		return true;
+	};
 	for (DWORD i = 0; i < directory.NumberOfNames; ++i)
 	{
 		WORD ordinal_relative;
@@ -238,20 +257,14 @@ bool export_list::add_exports(unsigned char* image, SIZE_T image_size, unsigned 
 		if (!export_string(image, image_size, name_offset, name))
 			return false;
 
-		DWORD rva;
-		memcpy(&rva, image + directory.AddressOfFunctions + static_cast<SIZE_T>(ordinal_relative) * sizeof(DWORD), sizeof(rva));
-		if (image_base > _UI64_MAX - rva)
+		if (!add_function(ordinal_relative, name.c_str()))
 			return false;
-
-		// Keep the existing filter used to avoid false matches during import repair.
-		if (rva % 0x1000 != 0)
-		{
-			const unsigned __int64 address = image_base + rva;
-			export_entry entry(library_name.c_str(), name.c_str(), static_cast<WORD>(directory.Base + ordinal_relative), rva, address, is64);
-			add_export(address, &entry);
-		}
 	}
-	return true;
+	// Named entries win aliases at the same address; all remaining EAT entries are ordinal imports.
+	for (DWORD i = 0; i < directory.NumberOfFunctions; ++i)
+		if (!add_function(i, NULL))
+			return false;
+	return add_exports(&parsed);
 }
 
 export_list::~export_list(void)

@@ -14,6 +14,7 @@ void append_name_safety_tests(std::vector<test_case>& tests);
 void append_hook_tests(std::vector<test_case>& tests);
 void append_output_tests(std::vector<test_case>& tests);
 void append_reconstruction_tests(std::vector<test_case>& tests);
+void append_pipeline_tests(std::vector<test_case>& tests);
 
 inline void require(bool condition, const char* message)
 {

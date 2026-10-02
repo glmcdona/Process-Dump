@@ -28,7 +28,9 @@ public:
 	__int64 EntryPointOverride;
 	char* output_path;
 
-	PD_OPTIONS()
+	PD_OPTIONS() : ImportRec(true), ForceGenHeader(false), Verbose(false), ReconstructHeaderAsDll(false),
+		DumpChunks(true), EntryPointHash(true), ForceReconstructEntryPoint(false), NumberOfThreads(16),
+		EntryPointOverride(-1)
 	{
 		output_path = new char[1];
 		strcpy(output_path,"");

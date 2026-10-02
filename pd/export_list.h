@@ -45,7 +45,7 @@ public:
 
 	export_list();
 	
-	bool add_exports(unsigned char* image, SIZE_T image_size, unsigned __int64 image_base, IMAGE_EXPORT_DIRECTORY* header_export_directory, bool is64);
+	bool add_exports(unsigned char* image, SIZE_T image_size, unsigned __int64 image_base, IMAGE_EXPORT_DIRECTORY* header_export_directory, bool is64, DWORD directory_size = 0);
 	bool add_exports(export_list* other);
 	void add_export(unsigned __int64 address, export_entry* entry);
 

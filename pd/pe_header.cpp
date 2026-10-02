@@ -604,6 +604,7 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 
 	// Gets the number of distinct import addresses that are imported.
 	unordered_set<unsigned __int64> import_addresses;
+	unordered_set<string> import_libraries;
 
 	if( _options->Verbose )
 			printf( "INFO: Building import information.\n" );
@@ -619,12 +620,13 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 
 	hash<string> hasher;
 	
-	if( this->_parsed_sections && exports != NULL && _image_size >= 8 && size_limit >= 8 )
+	if( this->_parsed_sections && exports != NULL && size_limit >= 4 )
 	{
+		const SIZE_T limit = static_cast<SIZE_T>((std::min<unsigned __int64>)(_image_size, size_limit));
 		// Add matches to exports in this process
 		unsigned __int32 cand32_last = 0;
 		unsigned __int64 cand64_last = 0;
-		for(__int64 offset = 0; offset < _image_size - 8 && offset < size_limit - 8; offset+=4 )
+		for(SIZE_T offset = 0; range_fits(limit, offset, sizeof(DWORD)); offset += sizeof(DWORD))
 		{
 			// Check if this 4-gram or 8-gram points to an export
 			unsigned __int32 cand32 = *((__int32*)(_image + offset));
@@ -650,8 +652,15 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 							hash_generic = hash_generic ^ hasher(string(entry.name));
 							hash_specific = hash_specific ^ hasher(string(entry.name));
 						}
+						else
+						{
+							const size_t ordinal_hash = hasher("#" + std::to_string(entry.ord));
+							hash_generic ^= ordinal_hash;
+							hash_specific ^= ordinal_hash;
+						}
 						if (entry.library_name != NULL)
 						{
+							import_libraries.insert(entry.library_name);
 							hash_generic = hash_generic ^ (hasher(string(entry.library_name)) << 1);
 							hash_specific = hash_specific ^ (hasher(string(entry.library_name)) << 1);
 						}
@@ -663,6 +672,8 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 			}
 			cand32_last = cand32;
 			
+			if (!range_fits(limit, offset, sizeof(unsigned __int64)))
+				continue;
 			unsigned __int64 cand64 = *((unsigned __int64*)(_image + offset));
 			if (cand64 != cand64_last && cand64 > 0xffffffff)
 			{
@@ -685,8 +696,15 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 							hash_generic = hash_generic ^ hasher(string(entry.name));
 							hash_specific = hash_specific ^ hasher(string(entry.name));
 						}
+						else
+						{
+							const size_t ordinal_hash = hasher("#" + std::to_string(entry.ord));
+							hash_generic ^= ordinal_hash;
+							hash_specific ^= ordinal_hash;
+						}
 						if (entry.library_name != NULL)
 						{
+							import_libraries.insert(entry.library_name);
 							hash_generic = hash_generic ^ (hasher(string(entry.library_name)) << 1);
 							hash_specific = hash_specific ^ (hasher(string(entry.library_name)) << 1);
 						}
@@ -702,6 +720,7 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 	
 	result.HASH_GENERIC = hash_generic;
 	result.HASH_SPECIFIC = hash_specific;
+	result.COUNT_UNIQUE_IMPORT_LIBRARIES = import_libraries.size();
 
 	if( _options->Verbose )
 	{
@@ -792,9 +811,9 @@ bool pe_header::build_pe_header( __int64 size, bool amd64, int num_sections_limi
 			_header_pe32->FileHeader.PointerToSymbolTable = 0;
 			_header_pe32->FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER32);
 			if( _options->ReconstructHeaderAsDll )
-				_header_pe32->FileHeader.Characteristics = 0x0002; // Exe: 0x0002
+				_header_pe32->FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_DLL | IMAGE_FILE_32BIT_MACHINE;
 			else
-				_header_pe32->FileHeader.Characteristics = 0x2000; // Dll: 0x2000
+				_header_pe32->FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_32BIT_MACHINE;
 			_header_pe32->OptionalHeader.Magic=0x10b;
 			_header_pe32->OptionalHeader.MajorLinkerVersion=0x08;
 			_header_pe32->OptionalHeader.MinorLinkerVersion=0x00;
@@ -841,9 +860,9 @@ bool pe_header::build_pe_header( __int64 size, bool amd64, int num_sections_limi
 			_header_pe64->FileHeader.PointerToSymbolTable = 0;
 			_header_pe64->FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER64);
 			if( _options->ReconstructHeaderAsDll )
-				_header_pe64->FileHeader.Characteristics = 0x0002; // Exe: 0x0002
+				_header_pe64->FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_DLL;
 			else
-				_header_pe64->FileHeader.Characteristics = 0x2000; // Dll: 0x2000
+				_header_pe64->FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE;
 			_header_pe64->OptionalHeader.Magic=0x020b;
 			_header_pe64->OptionalHeader.MajorLinkerVersion=0x08;
 			_header_pe64->OptionalHeader.MinorLinkerVersion=0x00;
@@ -1021,8 +1040,11 @@ bool pe_header::process_sections( )
 	_clear_images();
 	if (!_parsed_pe_32 && !_parsed_pe_64)
 		return false;
-	const SIZE_T nt_size = _parsed_pe_32 ? sizeof(IMAGE_NT_HEADERS32) : sizeof(IMAGE_NT_HEADERS64);
-	const SIZE_T section_offset = static_cast<SIZE_T>(_header_dos->e_lfanew) + nt_size;
+	const WORD optional_size = _parsed_pe_32 ? _header_pe32->FileHeader.SizeOfOptionalHeader : _header_pe64->FileHeader.SizeOfOptionalHeader;
+	const SIZE_T minimum_optional_size = _parsed_pe_32 ? sizeof(IMAGE_OPTIONAL_HEADER32) : sizeof(IMAGE_OPTIONAL_HEADER64);
+	if (optional_size < minimum_optional_size)
+		return _reject_size();
+	const SIZE_T section_offset = static_cast<SIZE_T>(_header_dos->e_lfanew) + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) + optional_size;
 	WORD section_count = _parsed_pe_32 ? _header_pe32->FileHeader.NumberOfSections : _header_pe64->FileHeader.NumberOfSections;
 	const DWORD declared_image_size = _parsed_pe_32 ? _header_pe32->OptionalHeader.SizeOfImage : _header_pe64->OptionalHeader.SizeOfImage;
 	const DWORD headers_size = _parsed_pe_32 ? _header_pe32->OptionalHeader.SizeOfHeaders : _header_pe64->OptionalHeader.SizeOfHeaders;
@@ -1060,8 +1082,7 @@ bool pe_header::process_sections( )
 	if( this->_parsed_pe_32 )
 	{
 		// Attempt to parse the sections
-		unsigned char* base_pe = _header_dos->e_lfanew + _raw_header;
-		unsigned char* base_sections = base_pe + sizeof(*_header_pe32);
+		unsigned char* base_sections = _raw_header + section_offset;
 		if( _header_pe32->FileHeader.NumberOfSections > 0x100 )
 		{
 			char* location = new char[FILEPATH_SIZE + 1];
@@ -1192,8 +1213,7 @@ bool pe_header::process_sections( )
 	else if( this->_parsed_pe_64 )
 	{
 		// Attempt to parse the sections
-		unsigned char* base_pe = _header_dos->e_lfanew + _raw_header;
-		unsigned char* base_sections = base_pe + sizeof(*_header_pe64);
+		unsigned char* base_sections = _raw_header + section_offset;
 		if( _header_pe64->FileHeader.NumberOfSections > 0x100 )
 		{
 			char* location = new char[FILEPATH_SIZE + 1];
@@ -1851,11 +1871,12 @@ bool pe_header::process_export_directory( )
 
 	if( (this->_parsed_pe_32 || this->_parsed_pe_64) && _image != NULL )
 	{
-		SIZE_T exports_rva;
+		IMAGE_DATA_DIRECTORY directory;
 		if( _parsed_pe_32 )
-			exports_rva = _header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+			directory = _header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
 		else
-			exports_rva = _header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+			directory = _header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+		const SIZE_T exports_rva = directory.VirtualAddress;
 		
 		if( exports_rva != 0 && range_fits(_image_size, exports_rva, sizeof(IMAGE_EXPORT_DIRECTORY)) )
 		{
@@ -1863,8 +1884,13 @@ bool pe_header::process_export_directory( )
 			_header_export_directory = ((IMAGE_EXPORT_DIRECTORY*) base_exports);
 			
 			// Parse this export directory
-			_export_list = new export_list();
-			_export_list->add_exports( _image, _image_size, (__int64) _original_base, _header_export_directory, this->_parsed_pe_64);
+			std::unique_ptr<export_list> exports(new export_list());
+			if (!exports->add_exports(_image, _image_size, (__int64)_original_base, _header_export_directory, _parsed_pe_64, directory.Size))
+			{
+				fprintf(stderr, "WARNING: Invalid export table in '%s'; excluding it from import reconstruction.\n", get_name());
+				return false;
+			}
+			_export_list = exports.release();
 			
 			return true;
 		}

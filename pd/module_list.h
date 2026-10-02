@@ -10,11 +10,42 @@
 #include <string>
 #include <string.h>
 #include <wchar.h>
+#include <vector>
 
 using namespace std::tr1;
 
 
 extern bool global_flag_verbose;
+
+namespace module_snapshot
+{
+	using enumerator = BOOL (WINAPI *)(HANDLE, HMODULE*, DWORD, LPDWORD, DWORD);
+
+	inline bool read(HANDLE process, std::vector<HMODULE>& modules, enumerator enumerate = EnumProcessModulesEx)
+	{
+		modules.resize(2048);
+		for (int attempt = 0; attempt < 8; ++attempt)
+		{
+			DWORD needed = 0;
+			if (!enumerate(process, modules.data(), static_cast<DWORD>(modules.size() * sizeof(HMODULE)), &needed, LIST_MODULES_ALL))
+			{
+				modules.clear();
+				return false;
+			}
+			if (needed % sizeof(HMODULE) != 0 || needed / sizeof(HMODULE) > 1024 * 1024)
+				break;
+			if (needed / sizeof(HMODULE) <= modules.size())
+			{
+				modules.resize(needed / sizeof(HMODULE));
+				return true;
+			}
+			modules.resize(needed / sizeof(HMODULE));
+		}
+		modules.clear();
+		SetLastError(ERROR_BAD_LENGTH);
+		return false;
+	}
+}
 
 namespace module_names
 {

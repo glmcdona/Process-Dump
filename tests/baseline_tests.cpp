@@ -154,6 +154,7 @@ int main(int argc, char** argv)
 		append_hook_tests(tests);
 		append_output_tests(tests);
 		append_reconstruction_tests(tests);
+		append_pipeline_tests(tests);
 	}
 	int failures = 0, count = 0;
 	for (const auto& test : tests)

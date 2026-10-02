@@ -146,7 +146,7 @@ MBI_BASIC_INFO dump_process::get_mbi_info(unsigned __int64 address)
 		result.base = mbi.BaseAddress;
 		result.end = mbi.BaseAddress + mbi.RegionSize;
 		result.protect = mbi.Protect;
-		result.valid = mbi.State != MEM_FREE && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+		result.valid = mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
 		result.executable = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) > 0;
 	}
 	else if (blockSize == sizeof(_MEMORY_BASIC_INFORMATION32))
@@ -156,7 +156,7 @@ MBI_BASIC_INFO dump_process::get_mbi_info(unsigned __int64 address)
 		result.base = mbi32->BaseAddress;
 		result.end = mbi32->BaseAddress + mbi32->RegionSize;
 		result.protect = mbi32->Protect;
-		result.valid = mbi32->State != MEM_FREE && !(mbi32->Protect & (PAGE_NOACCESS | PAGE_GUARD));
+		result.valid = mbi32->State == MEM_COMMIT && !(mbi32->Protect & (PAGE_NOACCESS | PAGE_GUARD));
 		result.executable = (mbi32->Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) > 0;
 	}
 
@@ -219,7 +219,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 					char output[2];
 					SIZE_T out_read;
 					int count = 0;
-					while(mbi_info.base + 0x300 < mbi_info.end && count < 1000 ) // Skip the rest of the section if we have looped over 1000 pages.
+					while(base + 0x300 < mbi_info.end && count < 1000 ) // Skip the rest of the section if we have looped over 1000 pages.
 					{
 						if( ReadProcessMemory( _ph, (LPCVOID) ((unsigned char*) base), output, 2, &out_read) && out_read == 2 )
 						{
@@ -240,7 +240,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 									unsigned __int64 end_address = header->get_virtual_size() + base;
 									for (set<unsigned __int64>::iterator it=executable_heaps.begin(); it!=executable_heaps.end(); )
 									{
-										if( *it <= end_address && *it >= base )
+										if( *it < end_address && *it >= base )
 										{
 											// We've accounted for this executable heap, remove it from the loose heap list
 											it = executable_heaps.erase(it);
@@ -539,18 +539,18 @@ void dump_process::dump_region(__int64 base)
 			if( _options->ForceGenHeader || !header->process_pe_header() )
 			{
 				if( _options->Verbose )
-					printf( "Generating 32-bit PE header for module at %llX.\n", base );
+					printf( "Generating 64-bit PE header for module at %llX.\n", base );
 				
 				// Build the pe header as 32 and 64 bit since it could be either
-				header->build_pe_header(0x1000ffff, true );
-				dump_header(header, base, _pid);
+				if (header->build_pe_header(0x1000, true))
+					dump_header(header, base, _pid);
 				delete header;
 
 				if( _options->Verbose )
-					printf( "Generating 64-bit PE header for module at %llX.\n", base );
+					printf( "Generating 32-bit PE header for module at %llX.\n", base );
 				header = new pe_header( _pid, (void*) base, modules, _options );
-				header->build_pe_header(0x1000ffff, false ); 
-				dump_header(header, base, _pid);
+				if (header->build_pe_header(0x1000, false))
+					dump_header(header, base, _pid);
 			}
 			else
 			{
@@ -720,7 +720,7 @@ void dump_process::dump_all()
 										unsigned __int64 end_address = header->get_virtual_size() + base;
 										for (set<unsigned __int64>::iterator it = executable_heaps.begin(); it != executable_heaps.end(); )
 										{
-											if ( *it <= end_address && *it >= base)
+											if ( *it < end_address && *it >= base)
 											{
 												// We've accounted for this executable heap, remove it from the loose heap list
 												it = executable_heaps.erase(it);

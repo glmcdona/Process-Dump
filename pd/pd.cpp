@@ -303,7 +303,7 @@ void dump_system(pe_hash_database* db, PD_OPTIONS* options)
 		}
 
 		// Add any newly started processes at the very end
-		if (!added_new_processes && work_queue.empty() && running_count )
+		if (!added_new_processes && work_queue.empty())
 		{
 			printf("...adding new processes since we started this job\n");
 			HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
@@ -1083,5 +1083,4 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	return 0;
 }
-
 
