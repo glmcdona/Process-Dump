@@ -13,6 +13,7 @@
 #include <thread>
 #include "pd.h"
 #include "close_watcher.h"
+#include "system_work.h"
 
 #define NMD_ASSEMBLY_IMPLEMENTATION
 #include "nmd_assembly.h"
@@ -130,244 +131,29 @@ void add_process_hashes( DWORD pid, pe_hash_database* db, PD_OPTIONS* options )
 	db->add_hashes_eps( new_hashes_eps, new_hashes_ep_shorts);
 }
 
-void add_process_hashes_worker(Queue<PROCESSENTRY32>* work_queue, pe_hash_database* db, PD_OPTIONS* options)
-{
-	// Gather hashes from the work queue process list
-	while (!work_queue->empty())
-	{
-		// Process the hashes for this process
-		PROCESSENTRY32 entry;
-		if (work_queue->pop(entry))
-		{
-			add_process_hashes(entry.th32ProcessID, db, options);
-		}
-	}
-}
-
-
-
 void add_system_hashes( pe_hash_database* db, PD_OPTIONS* options )
 {
-	// Add clean hashes from all processes on the system right now
-
-	// Build a list of the hashes from all processes
-	options->ImportRec = false; // Force no import reconstruciton
-
-	// Build the queue of work from the currently running processes
-	Queue<PROCESSENTRY32> work_queue;
-	int total_work_count = 0;
-
-	PROCESSENTRY32 entry;
-	entry.dwSize = sizeof(PROCESSENTRY32);
-	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
-
-	if( snapshot != INVALID_HANDLE_VALUE )
-	{
-		if (Process32First(snapshot, &entry) == TRUE)
-		{
-			while (Process32Next(snapshot, &entry) == TRUE)
-			{
-				printf("...adding process to work queue: pid 0x%x,%S\n", entry.th32ProcessID, entry.szExeFile);
-				work_queue.push(entry);
-				total_work_count++;
-			}
-		}
-		CloseHandle(snapshot);
-	}
-
-	// Create threads processing the work queue
-	thread** threads = new thread*[options->NumberOfThreads];
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		threads[i] = new thread(add_process_hashes_worker, &work_queue, db, options);
-	}
-
-	// Wait for queue depletion
-	int count = 0;
-	bool still_working = false;
-	int running_count = 1;
-	while (!work_queue.empty() || running_count > 0)
-	{
-		// Check threads state
-		running_count = 0;
-		for (int i = 0; i < options->NumberOfThreads; i++)
-		{
-			if( WaitForSingleObject(threads[i]->native_handle(), 1) == WAIT_TIMEOUT )
-				running_count++;
-		}
-
-		if (count % 10 == 0)
-		{
-			// Print the status
-			int waiting_count = work_queue.count();
-			printf("Hash Queue -> Waiting: %i\tRunning: %i\tComplete: %i\n", waiting_count, running_count, total_work_count - (waiting_count + running_count));
-		}
-
-		// Wait
-		Sleep(50);
-		count++;
-	}
-
-	// Wait for thread completions
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		threads[i]->join(); // blocks until each thread is finished
-	}
-
-	// Cleanup
-	printf("...cleaning up system memory hashes factory\n");
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		delete threads[i];
-	}
-	delete []threads;
-}
-
-
-void dump_process_worker(Queue<PROCESSENTRY32>* work_queue, pe_hash_database* db, PD_OPTIONS* options)
-{
-	// Gather hashes from the work queue process list
-	unordered_set<unsigned __int64> new_hashes;
-	while (!work_queue->empty())
-	{
-		// Process the hashes for this process
-		PROCESSENTRY32 entry;
-		if (work_queue->pop(entry))
-		{
-			// Process this process
-
-			// Dump
-			dump_process* dumper = new dump_process(entry.th32ProcessID, db, options, true);
-			dumper->dump_all();
-
-			// Exclude these hashes from the next dumps
-			dumper->get_all_hashes(&new_hashes, NULL, NULL);
-			db->add_hashes(new_hashes);
-			new_hashes.clear();
-
-			delete dumper;
-		}
-	}
+	work_pool pool(options->NumberOfThreads);
+	system_work(pool, false, system_processes, [=](DWORD pid, work_pool& workers) {
+		unordered_set<unsigned __int64> hashes, full, prefixes;
+		dump_process dumper(pid, db, options, true);
+		dumper.get_all_hashes(&hashes, &full, &prefixes, &workers);
+		db->add_hashes(hashes);
+		db->add_hashes_eps(full, prefixes);
+	});
 }
 
 
 void dump_system(pe_hash_database* db, PD_OPTIONS* options)
 {
-	// Dump modules from all running processes
-	
-	// Build the queue of work from the currently running processes
-	Queue<PROCESSENTRY32> work_queue;
-	unordered_set<DWORD> dumping_pids;
-
-	PROCESSENTRY32 entry;
-	entry.dwSize = sizeof(PROCESSENTRY32);
-	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
-	int total_work_count = 0;
-
-	if (snapshot != INVALID_HANDLE_VALUE)
-	{
-		if (Process32First(snapshot, &entry) == TRUE)
-		{
-			while (Process32Next(snapshot, &entry) == TRUE)
-			{
-				printf("...adding process to work queue: pid 0x%x,%S\n", entry.th32ProcessID, entry.szExeFile);
-				work_queue.push(entry);
-				dumping_pids.insert(entry.th32ProcessID);
-				total_work_count++;
-			}
-		}
-		CloseHandle(snapshot);
-	}
-
-	// Create threads processing the work queue
-	thread** threads = new thread*[options->NumberOfThreads];
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		threads[i] = new thread(dump_process_worker, &work_queue, db, options);
-	}
-
-	// Wait for queue depletion
-	int count = 0;
-	bool still_working = false;
-	int running_count = 1;
-	bool added_new_processes = false;
-
-	while (!work_queue.empty() || running_count > 0 || !added_new_processes)
-	{
-		// Check threads state
-		running_count = 0;
-		for (int i = 0; i < options->NumberOfThreads; i++)
-		{
-			if (WaitForSingleObject(threads[i]->native_handle(), 1) == WAIT_TIMEOUT)
-				running_count++;
-		}
-
-		// Add any newly started processes at the very end
-		if (!added_new_processes && work_queue.empty())
-		{
-			printf("...adding new processes since we started this job\n");
-			HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
-			if (snapshot != INVALID_HANDLE_VALUE)
-			{
-				if (Process32First(snapshot, &entry) == TRUE)
-				{
-					while (Process32Next(snapshot, &entry) == TRUE)
-					{
-						if (dumping_pids.count(entry.th32ProcessID) == 0)
-						{
-							printf("...adding new process to work queue: pid 0x%x,%S\n", entry.th32ProcessID, entry.szExeFile);
-							work_queue.push(entry);
-							dumping_pids.insert(entry.th32ProcessID);
-							total_work_count++;
-
-							// Add a new worker thread if needed
-							if (running_count < options->NumberOfThreads)
-							{
-								// Add a new worker thread
-								for (int i = 0; i < options->NumberOfThreads; i++)
-								{
-									if (WaitForSingleObject(threads[i]->native_handle(), 1) != WAIT_TIMEOUT)
-									{
-										threads[i]->join(); // blocks until each thread is finished
-										delete threads[i];
-										threads[i] = new thread(dump_process_worker, &work_queue, db, options);
-										break;
-									}
-								}
-							}
-						}
-					}
-				}
-				CloseHandle(snapshot);
-			}
-			added_new_processes = true;
-		}
-
-		if (count % 10 == 0)
-		{
-			// Print the status
-			int waiting_count = work_queue.count();
-			printf("Dump Queue -> Waiting: %i\tRunning: %i\tComplete: %i\n", waiting_count, running_count, total_work_count - (waiting_count + running_count));
-		}
-
-		// Wait
-		Sleep(50);
-		count++;
-	}
-
-	// Wait for thread completions
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		threads[i]->join(); // blocks until each thread is finished
-	}
-
-	// Cleanup
-	printf("...cleaning up system dump factory\n");
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		delete threads[i];
-	}
-	delete []threads;
+	work_pool pool(options->NumberOfThreads);
+	system_work(pool, true, system_processes, [=](DWORD pid, work_pool& workers) {
+		dump_process dumper(pid, db, options, true);
+		dumper.dump_all(&workers);
+		unordered_set<unsigned __int64> hashes;
+		dumper.get_all_hashes(&hashes, NULL, NULL, &workers);
+		db->add_hashes(hashes);
+	});
 }
 
 
@@ -377,7 +163,7 @@ void dump_system(pe_hash_database* db, PD_OPTIONS* options)
 
 bool global_flag_verbose = false;
 
-int _tmain(int argc, _TCHAR* argv[])
+int _tmain(int argc, _TCHAR* argv[]) try
 {
 
 	get_privileges( GetCurrentProcess() );
@@ -905,7 +691,7 @@ int _tmain(int argc, _TCHAR* argv[])
 			printf("Adding all files in folder '%s' to clean hash and entrypoint database...\n", add_directory);
 
 		int count_before = db->count();
-		db->add_folder(add_directory, L"*", flagRecursion);
+		db->add_folder(add_directory, L"*", flagRecursion, options.NumberOfThreads);
 		printf("Added %i new hashes to the database. It now has %i hashes.\n", db->count() - count_before, db->count());
 		db->save();
 	}else if( flagDB_remove )
@@ -934,25 +720,25 @@ int _tmain(int argc, _TCHAR* argv[])
 		// Add a bunch of folders to the database
 		count_before = db->count();
 		printf("Adding files in %%WINDIR%% to clean hash database...\n");
-		db->add_folder("%WINDIR%", L"*", true);
+		db->add_folder("%WINDIR%", L"*", true, options.NumberOfThreads);
 		printf("...added %i new hashes from %%WINDIR%%.\n", db->count() - count_before);
 		db->save();
 
 		count_before = db->count();
 		printf("Adding files in %%USERPROFILE%% to clean hash database...\n");
-		db->add_folder("%USERPROFILE%", L"*", true);
+		db->add_folder("%USERPROFILE%", L"*", true, options.NumberOfThreads);
 		printf("...added %i new hashes from %%USERPROFILE%%.\n", db->count() - count_before);
 		db->save();
 
 		count_before = db->count();
 		printf("Adding files in 'C:\\Program Files\\' to clean hash database...\n");
-		db->add_folder("C:\\Program Files\\", L"*", true);
+		db->add_folder("C:\\Program Files\\", L"*", true, options.NumberOfThreads);
 		printf("...added %i new hashes from 'C:\\Program Files\\'.\n", db->count() - count_before);
 		db->save();
 
 		count_before = db->count();
 		printf("Adding files in C:\\Program Files (x86)\\ to clean hash database...\n");
-		db->add_folder("C:\\Program Files (x86)\\", L"*", true);
+		db->add_folder("C:\\Program Files (x86)\\", L"*", true, options.NumberOfThreads);
 		printf("...added %i new hashes from 'C:\\Program Files (x86)\\'.\n", db->count() - count_before);
 		db->save();
 
@@ -1085,4 +871,9 @@ int _tmain(int argc, _TCHAR* argv[])
 	printf("Finished running.\n");
 
 	return 0;
+}
+catch (const std::exception& error)
+{
+	fprintf(stderr, "ERROR: Process Dump failed: %s.\n", error.what());
+	return 1;
 }

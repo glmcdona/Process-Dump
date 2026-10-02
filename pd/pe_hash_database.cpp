@@ -230,7 +230,16 @@ bool pe_hash_database::add_hashes_eps(const unordered_set<unsigned __int64>& has
 }
 	
 
-bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursively )
+bool pe_hash_database::add_folder(char* dir_name, WCHAR* filter, bool recursively, int threads)
+{
+	work_pool pool(threads);
+	size_t queued = 0;
+	const bool result = _add_folder(dir_name, filter, recursively, pool, queued);
+	pool.wait();
+	return result;
+}
+
+bool pe_hash_database::_add_folder(char* dir_name, WCHAR* filter, bool recursively, work_pool& pool, size_t& queued)
 {
 	// Expand the environment names in the directory
 	char dir_name_expanded[PATH_MAX + 1];
@@ -264,7 +273,7 @@ bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursive
 								char* directory = new char[strlen(dir_name_expanded) + strlen(ent->d_name) + 2];
 								sprintf_s(directory, strlen(dir_name_expanded) + strlen(ent->d_name) + 2, "%s\\%s", dir_name_expanded, ent->d_name);
 
-								add_folder(directory, filter, recursively);
+								_add_folder(directory, filter, recursively, pool, queued);
 
 								// Cleanup
 								delete[] directory;
@@ -280,23 +289,24 @@ bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursive
 								filename[length] = 0;
 								sprintf(filename, "%s\\%S", dir_name_expanded, result);
 
-								// Processes the specified file
-								FILE* fh = fopen(filename, "rb");
-								if (fh != NULL)
-								{
-									if (_is_mz(fh))
+								const std::string path(filename);
+								pool.submit([this, path] {
+									FILE* fh = fopen(path.c_str(), "rb");
+									if (fh != NULL)
 									{
+										const bool pe = _is_mz(fh);
 										fclose(fh);
-
-										add_file(filename);
+										if (pe)
+										{
+											auto mutable_path = path;
+											add_file(&mutable_path[0]);
+										}
 									}
 									else
-										fclose(fh);
-								}
-								else {
-									// Error
-									fprintf(stderr, "Error opening file %s: %s.\n", filename, strerror(errno));
-								}
+										fprintf(stderr, "Error opening file %s: %s.\n", path.c_str(), strerror(errno));
+								});
+								if (++queued % 256 == 0)
+									pool.wait();
 								delete[] filename;
 							}
 						}

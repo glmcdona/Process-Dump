@@ -1,6 +1,7 @@
 #include "StdAfx.h"
 #include "dump_process.h"
 #include "dump_path.h"
+#include "module_work.h"
 
 
 
@@ -164,146 +165,63 @@ MBI_BASIC_INFO dump_process::get_mbi_info(unsigned __int64 address)
 }
 
 
-int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes, unordered_set<unsigned __int64>* output_hashes_eps, unordered_set<unsigned __int64>* output_hashes_ep_shorts)
+std::vector<unsigned __int64> dump_process::scan_regions(set<unsigned __int64>& executable_heaps)
+{
+	std::vector<unsigned __int64> bases;
+	for (unsigned __int64 address = 0;;)
+	{
+		const auto region = get_mbi_info(address);
+		if (region.base != 0 && region.end > region.base && region.valid)
+		{
+			if (_options->DumpChunks && region.executable)
+				executable_heaps.insert(region.base);
+			if (_options->Verbose)
+				printf("INFO: Scanning region 0x%llX to 0x%llX for MZ headers.\n", region.base, region.end);
+			unsigned __int64 base = region.base - region.base % PAGE_SIZE;
+			for (int page = 0; page < 1000 && base < region.end && region.end - base > 0x300; ++page, base += PAGE_SIZE)
+			{
+				WORD signature = 0;
+				SIZE_T read = 0;
+				if (ReadProcessMemory(_ph, reinterpret_cast<void*>(base), &signature, sizeof(signature), &read) &&
+					read == sizeof(signature) && signature == IMAGE_DOS_SIGNATURE)
+					bases.push_back(base);
+			}
+		}
+		if (region.end <= address)
+			break;
+		address = region.end;
+	}
+	return bases;
+}
+
+int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes, unordered_set<unsigned __int64>* output_hashes_eps, unordered_set<unsigned __int64>* output_hashes_ep_shorts, work_pool* pool)
 {
 	// Adds all the modules in the process to the output array
 	if( _ph != NULL )
 	{
-		if( !_options->DumpChunks || build_export_list() ) // Only build export list if getting hashes for code chunks
+		if( !_options->DumpChunks || build_export_list(pool) ) // Only build export list if getting hashes for code chunks
 		{
 			// First build a list of the modules
-			module_list* modules = new module_list( _pid );
+			module_list module_snapshot(_pid);
+			auto* modules = &module_snapshot;
 			
-			// Set the max address of the target process
-			unsigned __int64 maxAddress = 0;
-			maxAddress = 0xffffffffffffffff; // Not a problem for 32bit targets
-			
-			// Walk the process heaps
-			__int64 address = 0;
-			
-			// First loop to build a list of executable heaps for later use in locating loose executable heaps not associated with any modules
 			set<unsigned __int64> executable_heaps;
-			if( _options->DumpChunks )
-			{
-				while (address < maxAddress)
-				{
-					MBI_BASIC_INFO mbi_info = get_mbi_info(address);
-					
-					// Check if this is a loose executable heap
-					if( mbi_info.base > 0 && mbi_info.end > 0 && mbi_info.valid && mbi_info.executable)
-					{
-						executable_heaps.insert(mbi_info.base);
-					}
-					
-					if( mbi_info.end + 1 <= address )
-						break;
-					address = mbi_info.end + 1;
-				}
-			}
-
-			// Load all the PE files in the process
-			address = 0;
-
-			while (address < maxAddress)
-			{
-				// Load this heap information
-				MBI_BASIC_INFO mbi_info = get_mbi_info(address);
-
-				if (mbi_info.base > 0 && mbi_info.end > 0 && mbi_info.valid )
-				{
-					if( _options->Verbose )
-						fprintf( stdout, "INFO: Scanning from region from 0x%llX to 0x%llX for MZ headers.\n", mbi_info.base, mbi_info.end );
-
-					// This heap may have a PE file, check all page alignments for a "MZ".
-					unsigned __int64 base = mbi_info.base - (mbi_info.base % PAGE_SIZE); // shouldn't be required.
-					char output[2];
-					SIZE_T out_read;
-					int count = 0;
-					while(base + 0x300 < mbi_info.end && count < 1000 ) // Skip the rest of the section if we have looped over 1000 pages.
-					{
-						if( ReadProcessMemory( _ph, (LPCVOID) ((unsigned char*) base), output, 2, &out_read) && out_read == 2 )
-						{
-							if( output[0] == 'M' && output[1] == 'Z' )
-							{
-								if( _options->Verbose )
-									fprintf( stdout, "INFO: Found MZ header at %llX.\n", base );
-
-								// Bingo, possible MZ file
-								pe_header* header = new pe_header( _ph, (void*) base, modules, _options );
-
-								header->process_pe_header();
-								header->process_sections();
-
-								if( header->somewhat_parsed() )
-								{
-									// Exclude all executable regions from this PE module
-									unsigned __int64 end_address = header->get_virtual_size() + base;
-									for (set<unsigned __int64>::iterator it=executable_heaps.begin(); it!=executable_heaps.end(); )
-									{
-										if( *it < end_address && *it >= base )
-										{
-											// We've accounted for this executable heap, remove it from the loose heap list
-											it = executable_heaps.erase(it);
-										}
-										else
-										{
-											it++;
-										}
-									}
-
-									// Check hash
-									unsigned __int64 hash = header->get_hash();
-									if( hash != 0 && !_db_clean->contains(hash) && output_hashes->count( hash ) == 0 )
-									{
-										// Add this to the output hash array
-										output_hashes->insert( hash );
-									}
-
-									if (output_hashes_ep_shorts != NULL)
-									{
-										// Also get the entrypoint hash
-										hash = header->get_hash_ep_short();
-
-										if (hash != 0)
-										{
-											if( output_hashes_ep_shorts->count(hash) == 0 )
-											{
-												// Add this to the output hash array
-												output_hashes_ep_shorts->insert(hash);
-											}
-										}
-
-										if (output_hashes_eps != NULL)
-										{
-											// Also get the entrypoint hash
-											hash = header->get_hash_ep();
-
-											if (hash != 0 && output_hashes_eps->count(hash) == 0)
-											{
-												// Add this to the output hash array
-												output_hashes_eps->insert(hash);
-											}
-										}
-									}
-
-									
-
-									
-
-								}
-								delete header;
-							}
-						}
-
-						base += PAGE_SIZE;
-						count++;
-					}
-				}
-
-				if (mbi_info.end + 1 <= address)
-					break;
-				address = mbi_info.end + 1;
-			}
+			const auto bases = scan_regions(executable_heaps);
+			std::mutex results;
+			module_work(pool, bases, [&](unsigned __int64 base) {
+				pe_header header(_ph, reinterpret_cast<void*>(base), modules, _options);
+				if (!header.process_pe_header() || !header.process_sections() || !header.somewhat_parsed())
+					return;
+				const auto hash = header.get_hash();
+				const auto short_hash = output_hashes_ep_shorts ? header.get_hash_ep_short() : 0;
+				const auto full_hash = output_hashes_ep_shorts && output_hashes_eps ? header.get_hash_ep() : 0;
+				const bool known = _db_clean->contains(hash);
+				std::lock_guard<std::mutex> lock(results);
+				exclude_module_heaps(executable_heaps, base, header.get_virtual_size());
+				if (hash && !known) output_hashes->insert(hash);
+				if (short_hash) output_hashes_ep_shorts->insert(short_hash);
+				if (full_hash) output_hashes_eps->insert(full_hash);
+			});
 
 			
 			if( _options->DumpChunks )
@@ -313,6 +231,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 					fprintf( stdout, "INFO: Looking at unattached executable heaps...\n" );
 				
 				int count_new_header_hashes = 0;
+				std::vector<unsigned __int64> chunks;
 				for (set<unsigned __int64>::iterator it=executable_heaps.begin(); it!=executable_heaps.end(); it++)
 				{
 					// Unattached executable page. First check hash of crc32 of first 2kb of memory since import reconstruction hashing is
@@ -336,31 +255,24 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 
 						// Add this header hash
 						output_hashes->insert( chunk_header_hash );
-
-						// Calculate the generic import reference hash as well
-						pe_header* header = new pe_header( _ph, (void*) *it, modules, _options );
-						header->build_pe_header( 0x1000, true, 1 ); // 64bit, only build it with the 1 executable section for performance reasons
-						header->process_sections();
-
-						// Get the import attributes of this header
-						IMPORT_SUMMARY import_summary = header->get_imports_information(&this->_export_list);
-
-						// Check hash
-						if( import_summary.HASH_GENERIC != 0 && !_db_clean->contains(import_summary.HASH_GENERIC) && output_hashes->count( import_summary.HASH_GENERIC ) == 0 )
-						{
-							if( _options->Verbose )
-								fprintf( stdout, "INFO: Adding hash from unattached heap at 0x%llX to process hash list: Hash=0x%llX\n", *it, import_summary.HASH_GENERIC );
-							
-							output_hashes->insert( import_summary.HASH_GENERIC );
-						}
-						delete header;
+						chunks.push_back(*it);
 					}
 				}
+				module_work(pool, chunks, [&](unsigned __int64 base) {
+					pe_header header(_ph, reinterpret_cast<void*>(base), modules, _options);
+					if (!header.build_pe_header(0x1000, true, 1) || !header.process_sections())
+						return;
+					const auto summary = header.get_imports_information(&_export_list);
+					if (summary.HASH_GENERIC && !_db_clean->contains(summary.HASH_GENERIC))
+					{
+						std::lock_guard<std::mutex> lock(results);
+						output_hashes->insert(summary.HASH_GENERIC);
+					}
+				});
 				if( _options->Verbose )
 					fprintf( stdout, "INFO: Done looking at unattached executable heaps...\n" );
 			}
 
-			delete modules;
 		}
 	}
 	else if( _options->Verbose )
@@ -390,7 +302,7 @@ unsigned __int64 dump_process::hash_codechunk_header(__int64 base)
 	return 0;
 }
 
-bool dump_process::build_export_list()
+bool dump_process::build_export_list(work_pool* pool)
 {
 	// Walk through each module, building the export list for this process. This will be used for import reconstruction
 	// Returns: True if there are any modules to dump, False if there is nothing to dump.
@@ -403,23 +315,23 @@ bool dump_process::build_export_list()
 		if (_ph != NULL)
 		{
 			// First build a list of the modules
-			module_list* modules = new module_list(_pid);
-
-			// Loop through each of these modules, grabbing their exports
-			for (unordered_map<unsigned __int64, module*>::const_iterator item = modules->_modules.begin(); item != modules->_modules.end(); ++item)
-			{
-				pe_header* header = new pe_header(_ph, (void*) item->first, modules, _options);
-				if (header->process_pe_header() && header->process_sections() && header->process_export_directory())
+			module_list modules(_pid);
+			std::vector<unsigned __int64> bases;
+			for (const auto& item : modules._modules) bases.push_back(item.first);
+			std::vector<size_t> indices;
+			for (size_t i = 0; i < bases.size(); ++i) indices.push_back(i);
+			std::vector<std::unique_ptr<export_list>> exports(bases.size());
+			module_work(pool, indices, [&](size_t i) {
+				pe_header header(_ph, reinterpret_cast<void*>(bases[i]), &modules, _options);
+				if (header.process_pe_header() && header.process_sections() && header.process_export_directory())
 				{
-					// Load it's exports
-					this->_export_list.take_exports(*header->get_exports());
+					exports[i].reset(new export_list);
+					exports[i]->take_exports(*header.get_exports());
 				}
-
-				// Cleanup
-				delete header;
-			}
-
-			delete modules;
+			});
+			// Merge in snapshot order, not completion order, to preserve alias precedence.
+			for (auto& entry : exports)
+				if (entry) _export_list.take_exports(*entry);
 		}
 		_export_list_built = true;
 	}
@@ -645,136 +557,49 @@ bool dump_process::monitor_close_dump_and_resume()
 	return false; // not hooked
 }
 
-void dump_process::dump_all()
+void dump_process::dump_all(work_pool* pool)
 {
 	// Walk through the pages while dumping all MZ files that do not match our good hash database.
 	printf( "dumping process %s with pid 0x%x...\n", this->_process_name, this->_pid );
 	if( _ph != NULL )
 	{
 		// First build the export list for this process
-		if ((!_options->ImportRec && !_options->DumpChunks) || build_export_list())
+		if ((!_options->ImportRec && !_options->DumpChunks) || build_export_list(pool))
 		{
 			// First build a list of the modules
-			module_list* modules = new module_list( _pid );
+			module_list module_snapshot(_pid);
+			auto* modules = &module_snapshot;
 
-			// Set the max address of the target process
-			unsigned __int64 maxAddress = 0;
-			maxAddress = 0xffffffffffffffff; // Not a problem for 32bit targets
-			
-			// Walk the process heaps
-			__int64 address = 0;
-			
-			// First loop to build a list of executable heaps for later use in locating loose executable heaps not associated with any modules
 			set<unsigned __int64> executable_heaps;
-			if (_options->DumpChunks)
-			{
-				while (address < maxAddress)
+			const auto bases = scan_regions(executable_heaps);
+			std::mutex results;
+			module_work(pool, bases, [&](unsigned __int64 base) {
+				pe_header header(_ph, reinterpret_cast<void*>(base), modules, _options);
+				if (header.process_pe_header() && header.process_sections() &&
+					header.somewhat_parsed() && header.process_import_directory())
 				{
-					MBI_BASIC_INFO mbi_info = get_mbi_info(address);
-
-					// Check if this is a loose executable heap (this check causes it to fail.)
-					if (mbi_info.base > 0 && mbi_info.end > 0 && mbi_info.valid && mbi_info.executable)
 					{
-						executable_heaps.insert(mbi_info.base);
+						std::lock_guard<std::mutex> lock(results);
+						exclude_module_heaps(executable_heaps, base, header.get_virtual_size());
 					}
-
-					if (mbi_info.end + 1 <= address)
-						break;
-					address = mbi_info.end + 1;
-				}
-			}
-
-			// Load all the PE files in the process
-			address = 0;
-			while (address < maxAddress)
-			{
-				MBI_BASIC_INFO mbi_info = get_mbi_info(address);
-
-				// Check if this is a loose executable heap
-				if ( mbi_info.base > 0 && mbi_info.end > 0 && mbi_info.valid )
-				{
-					if (_options->Verbose)
-						fprintf(stdout, "INFO: Scanning from region from 0x%llX to 0x%llX for MZ headers.\n", mbi_info.base, mbi_info.end);
-
-
-					// This heap may have a PE file, check all page alignments for a "MZ".
-					unsigned __int64 base = mbi_info.base - (mbi_info.base % PAGE_SIZE); // shouldn't be required.
-					char output[2];
-					SIZE_T out_read;
-					int count = 0;
-					while (base + 0x300 < mbi_info.end && count < 1000) // Skip the rest of the section if we have looped over 1000 pages.
+					const auto hash = header.get_hash();
+					if (hash != 0 && !_db_clean->contains(hash))
 					{
-						if (ReadProcessMemory(_ph, (LPCVOID)((unsigned char*)base), output, 2, &out_read) && out_read == 2)
+						if (_options->ForceGenHeader)
 						{
-							if (output[0] == 'M' && output[1] == 'Z')
+							printf("Dumping a module but ignoring existing PE Header for module at 0x%llX.\n", base);
+							for (bool win64 : {true, false})
 							{
-								// Bingo, possible MZ file
-								pe_header* header = new pe_header(_ph, (void*)base, modules, _options);
-
-								// Use the existing PE header for the dumping
-								if (header->process_pe_header())
-								{
-									if (header->process_sections() && header->somewhat_parsed() && header->process_import_directory())
-									{
-										// Exclude all executable regions from this PE module
-										unsigned __int64 end_address = header->get_virtual_size() + base;
-										for (set<unsigned __int64>::iterator it = executable_heaps.begin(); it != executable_heaps.end(); )
-										{
-											if ( *it < end_address && *it >= base)
-											{
-												// We've accounted for this executable heap, remove it from the loose heap list
-												it = executable_heaps.erase(it);
-											}
-											else
-											{
-												it++;
-											}
-										}
-
-										// Check hash
-										unsigned __int64 hash = header->get_hash();
-										if (hash != 0 && !_db_clean->contains(hash))
-										{
-											if (_options->ForceGenHeader)
-											{
-												// Use the existing PE header only to get the hash, then generate a PE header for the dumping.
-												fprintf(stdout, "Dumping a module but ignoring existing PE Header for module at 0x%llX.\n", base);
-												pe_header* header_dump = new pe_header(_ph, (void*)base, modules, _options);
-												header_dump->build_pe_header(0x1000, true); // 64bit
-												dump_header(header_dump, base, _pid);
-												delete header_dump;
-
-												header_dump = new pe_header(_ph, (void*)base, modules, _options);
-												header_dump->build_pe_header(0x1000, false); // 32bit
-												dump_header(header_dump, base, _pid);
-												delete header_dump;
-											}
-											else if (header->process_disk_image(&this->_export_list, this->_db_clean))
-											{
-												write_dump(header, base, _pid);
-											}
-										}
-									}
-								}
-
-								// Cleanup
-								delete header;
+								pe_header generated(_ph, reinterpret_cast<void*>(base), modules, _options);
+								if (generated.build_pe_header(0x1000, win64))
+									dump_header(&generated, base, _pid);
 							}
 						}
-						else
-						{
-
-						}
-
-						base += PAGE_SIZE;
-						count++;
+						else if (header.process_disk_image(&_export_list, _db_clean))
+							write_dump(&header, base, _pid);
 					}
 				}
-
-				if (mbi_info.end + 1 <= address)
-					break;
-				address = mbi_info.end + 1;
-			}
+			});
 
 			if( _options->DumpChunks )
 			{
@@ -783,6 +608,7 @@ void dump_process::dump_all()
 					fprintf( stdout, "INFO: Looking at unattached executable heaps...\n" );
 
 				int count_new_header_hashes = 0;
+				std::vector<unsigned __int64> chunks;
 				for (set<unsigned __int64>::iterator it=executable_heaps.begin(); it!=executable_heaps.end(); it++)
 				{
 					// Unattached executable page. First check hash of crc32 of first 2kb of memory since import reconstruction hashing is
@@ -804,44 +630,33 @@ void dump_process::dump_all()
 							break; // Too many new code chunks
 						}
 						
-						// Calculate the generic import reference hash as well
-						pe_header* header = new pe_header( _ph, (void*) *it, modules, _options );
-						header->build_pe_header( 0x1000, true, 1 ); // 64bit, only build it with the 1 executable section for performance reasons
-						header->process_sections();
-
-						// Get the import attributes of this header
-						IMPORT_SUMMARY import_summary = header->get_imports_information(&this->_export_list);
-
-						// Check hash
-						if( import_summary.HASH_GENERIC != 0 && !_db_clean->contains(import_summary.HASH_GENERIC) )
-						{
-							if( _options->Verbose )
-								fprintf( stdout, "INFO: Unattached executable heap at 0x%llX found with %i imports matched.\n", *it, import_summary.COUNT_UNIQUE_IMPORT_ADDRESSES );
-							
-							if( header->somewhat_parsed() && import_summary.COUNT_UNIQUE_IMPORT_ADDRESSES >= 2 ) // Require at least 5 imports for dumping
-							{
-								fprintf( stdout, "Dumping unattached executable code chunk from 0x%llX.\n", *it );
-								pe_header* header_dump = new pe_header( _ph, (void*) *it, modules, _options );
-								header_dump->build_pe_header( 0x1000, true ); // 64bit
-								header_dump->set_name("codechunk");
-								dump_header(header_dump, *it, _pid);
-								delete header_dump;
-								
-								header_dump = new pe_header( _ph, (void*) *it, modules, _options );
-								header_dump->build_pe_header( 0x1000, false ); // 32bit
-								header_dump->set_name("codechunk");
-								dump_header(header_dump, *it, _pid);
-								delete header_dump;
-							}
-						}
-						delete header;
+						chunks.push_back(*it);
 					}
 				}
+				module_work(pool, chunks, [&](unsigned __int64 base) {
+					pe_header header(_ph, reinterpret_cast<void*>(base), modules, _options);
+					if (!header.build_pe_header(0x1000, true, 1) || !header.process_sections())
+						return;
+					const auto summary = header.get_imports_information(&_export_list);
+					if (summary.HASH_GENERIC && !_db_clean->contains(summary.HASH_GENERIC) &&
+						header.somewhat_parsed() && summary.COUNT_UNIQUE_IMPORT_ADDRESSES >= 2)
+					{
+						printf("Dumping unattached executable code chunk from 0x%llX.\n", base);
+						for (bool win64 : {true, false})
+						{
+							pe_header generated(_ph, reinterpret_cast<void*>(base), modules, _options);
+							if (generated.build_pe_header(0x1000, win64))
+							{
+								generated.set_name("codechunk");
+								dump_header(&generated, base, _pid);
+							}
+						}
+					}
+				});
 				if( _options->Verbose )
 					fprintf( stdout, "INFO: Done looking at unattached executable heaps...\n" );
 			}
 
-			delete modules;
 		}
 	}
 }

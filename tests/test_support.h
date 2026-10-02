@@ -17,9 +17,14 @@ void append_reconstruction_tests(std::vector<test_case>& tests);
 void append_pipeline_tests(std::vector<test_case>& tests);
 void append_performance_tests(std::vector<test_case>& tests);
 void append_reexecution_tests(std::vector<test_case>& tests);
+void append_scheduling_tests(std::vector<test_case>& tests);
+void append_entrypoint_tests(std::vector<test_case>& tests);
 int run_performance_benchmark(int argc, char** argv);
 int run_reexecution_probe(int argc, char** argv);
 int run_reexecution_fixture();
+int run_entrypoint_benchmark(int argc, char** argv);
+int run_system_fixture();
+int run_system_benchmark(int argc, char** argv);
 
 inline void require(bool condition, const char* message)
 {

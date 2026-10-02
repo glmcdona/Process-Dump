@@ -138,6 +138,12 @@ int main(int argc, char** argv)
 		return run_reexecution_probe(argc - 2, argv + 2);
 	if (argc == 2 && strcmp(argv[1], "--reexecution-fixture") == 0)
 		return run_reexecution_fixture();
+	if (argc > 1 && strcmp(argv[1], "--entrypoint-corpus") == 0)
+		return run_entrypoint_benchmark(argc - 2, argv + 2);
+	if (argc == 2 && strcmp(argv[1], "--system-fixture") == 0)
+		return run_system_fixture();
+	if (argc > 1 && strcmp(argv[1], "--system-work") == 0)
+		return run_system_benchmark(argc - 2, argv + 2);
 	std::vector<test_case> tests = {
 		{"crc-vectors", crc_vectors}, {"file-stream", file_stream_roundtrip},
 		{"process-stream", process_stream_roundtrip},
@@ -163,6 +169,8 @@ int main(int argc, char** argv)
 		append_pipeline_tests(tests);
 		append_performance_tests(tests);
 		append_reexecution_tests(tests);
+		append_scheduling_tests(tests);
+		append_entrypoint_tests(tests);
 	}
 	int failures = 0, count = 0;
 	for (const auto& test : tests)

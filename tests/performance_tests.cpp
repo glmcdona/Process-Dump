@@ -159,7 +159,7 @@ namespace
 		require(DeleteFileA(output.path) && header.write_image(output.path), "entrypoint output failed");
 		const auto dumped = output.read();
 		require(reinterpret_cast<const NT*>(dumped.data() + 0x80)->OptionalHeader.AddressOfEntryPoint ==
-			(strong ? 0x1080 : 0x1040), "entrypoint weak/strong candidate precedence changed");
+			(strong ? 0x1080 : 0), "entrypoint strong recovery or weak-only abstention changed");
 	}
 
 	void borrowed_process_identity()

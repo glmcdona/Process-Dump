@@ -305,6 +305,9 @@
     <ClInclude Include="terminate_monitor_hook.h" />
     <ClInclude Include="utils.h" />
     <ClInclude Include="work_queue.h" />
+    <ClInclude Include="work_pool.h" />
+    <ClInclude Include="module_work.h" />
+    <ClInclude Include="system_work.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="pd.rc" />

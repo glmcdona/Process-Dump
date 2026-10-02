@@ -1601,6 +1601,93 @@ bool pe_header::_pack_disk_image(const unsigned char* image, SIZE_T size, SIZE_T
 	return true;
 }
 
+bool pe_header::_executable_range(SIZE_T rva, SIZE_T length) const
+{
+	if (!range_fits(_image_size, rva, length))
+		return false;
+	for (int i = 0; i < _num_sections; ++i)
+	{
+		const auto& section = _header_sections[i];
+		if ((section.Characteristics & IMAGE_SCN_MEM_EXECUTE) && rva >= section.VirtualAddress &&
+			range_fits((std::max)(section.Misc.VirtualSize, section.SizeOfRawData), rva - section.VirtualAddress, length))
+			return true;
+	}
+	return false;
+}
+
+void pe_header::_recover_entrypoint(pe_hash_database* database)
+{
+	if (!database || !_options->EntryPointHash)
+		return;
+	DWORD& original = _parsed_pe_32 ? _header_pe32->OptionalHeader.AddressOfEntryPoint :
+		_header_pe64->OptionalHeader.AddressOfEntryPoint;
+	if (!_options->ForceReconstructEntryPoint && original != 0 && _executable_range(original, 1))
+		return;
+	const auto hashes = database->snapshot_entrypoints();
+	if (hashes->full.empty())
+		return;
+	DWORD best = 0;
+	for (int i = 0; i < _num_sections; ++i)
+	{
+		const auto& section = _header_sections[i];
+		const SIZE_T size = (std::max)(section.Misc.VirtualSize, section.SizeOfRawData);
+		if (!(section.Characteristics & IMAGE_SCN_MEM_EXECUTE) || !range_fits(_image_size, section.VirtualAddress, size))
+			continue;
+		for (SIZE_T offset = 0; range_fits(size, offset, sizeof(ULONGLONG)); ++offset)
+		{
+			const SIZE_T rva = section.VirtualAddress + offset;
+			if (best && rva >= best)
+				break;
+			ULONGLONG prefix = 0;
+			memcpy(&prefix, _image + rva, sizeof(prefix));
+			if (prefix >= hashes->minimum && prefix <= hashes->maximum && hashes->short_hashes.count(prefix) &&
+				rva != 0)
+			{
+				const auto full = _hash_asm(rva);
+				if (full && hashes->full.count(full)) best = static_cast<DWORD>(rva);
+			}
+		}
+	}
+	if (!best && _parsed_pe_64)
+	{
+		// x64 unwind metadata gives bounded function starts even when relocated
+		// operands or build changes prevent the raw eight-byte prefilter matching.
+		const auto& directory = _header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+		bool valid = directory.VirtualAddress != 0 && directory.Size % sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY) == 0 &&
+			range_fits(_image_size, directory.VirtualAddress, directory.Size);
+		DWORD previous = 0, candidate = 0;
+		bool ambiguous = false;
+		for (SIZE_T offset = 0; valid && offset < directory.Size; offset += sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY))
+		{
+			IMAGE_RUNTIME_FUNCTION_ENTRY function;
+			memcpy(&function, _image + directory.VirtualAddress + offset, sizeof(function));
+			if (function.BeginAddress >= function.EndAddress || (offset && function.BeginAddress < previous) ||
+				!_executable_range(function.BeginAddress, function.EndAddress - function.BeginAddress) ||
+				!range_fits(_image_size, function.UnwindData & ~1u, sizeof(DWORD)))
+			{
+				valid = false;
+				break;
+			}
+			previous = function.EndAddress;
+			const auto full = _hash_asm(function.BeginAddress);
+			if (full && hashes->full.count(full))
+			{
+				if (candidate && candidate != function.BeginAddress) ambiguous = true;
+				candidate = function.BeginAddress;
+			}
+		}
+		if (valid && !ambiguous)
+			best = candidate;
+	}
+	if (best)
+	{
+		printf("INFO: Recovered entrypoint for '%s': %x -> %x (opcode hash match).\n", get_name(), original, best);
+		original = best;
+	}
+	else
+		fprintf(stderr, "WARNING: No unambiguous supported entrypoint match for '%s'; retaining RVA %x.\n", get_name(), original);
+}
+
 bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash_database)
 {
 	delete[] _disk_image;
@@ -1661,58 +1748,11 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				return rva >= range.first && range_fits(range.second, rva - range.first, width);
 			});
 	};
+	_recover_entrypoint(hash_database);
 	if( this->_parsed_sections )
 	{
 		if( this->_parsed_pe_32 )
 		{
-			// Re-build the Original Entry Point OEP if it looks to be not valid
-			if (hash_database != NULL && (_header_pe32->OptionalHeader.AddressOfEntryPoint == 0 ||
-				_header_pe32->OptionalHeader.AddressOfEntryPoint == 0x2000 ||
-				!range_fits(_image_size, _header_pe32->OptionalHeader.AddressOfEntryPoint, 20) ||
-				_options->ForceReconstructEntryPoint))
-			{
-				printf("INFO: Re-building entrypoint. Original entrypoint invalid: %x\n", _header_pe32->OptionalHeader.AddressOfEntryPoint);
-
-				// The entry-point looks invalid, search for candidates to reconstruct it
-				unsigned __int64 best_entrypoint = 0;
-				const auto entrypoints = hash_database->snapshot_entrypoints();
-
-				for (__int64 offset = 0x1000; !entrypoints->short_hashes.empty() && _image_size >= 8 && offset < _image_size - 8; offset += 1)
-				{
-					// Check if this is a possible entrypoint
-					unsigned __int64 cand = *((__int64*)(_image + offset));
-
-					// Lookup the address
-					if (cand >= entrypoints->minimum && cand <= entrypoints->maximum && entrypoints->short_hashes.count(cand) != 0)
-					{
-						// This is a possible entrypoint, this is a weak correlation but we'll use it if it's all we have
-						if (best_entrypoint == 0)
-						{
-							best_entrypoint = offset;
-						}
-						if( _options->Verbose )
-							printf("INFO: Possible entrypoint found (weak): %x\n", offset);
-
-						// Validate that the full hash matches a known entrypoint
-						cand = _hash_asm(offset);
-						if (entrypoints->full.count(cand) != 0)
-						{
-							best_entrypoint = offset;
-							printf("INFO: Possible entrypoint found (strong): %x\n", offset);
-							if (!_options->Verbose)
-								break;
-						}
-					}
-				}
-
-				// Update the entrypoint
-				if (best_entrypoint != 0)
-				{
-					_header_pe32->OptionalHeader.AddressOfEntryPoint = best_entrypoint;
-					printf("INFO: Updated entrypoint to: %x\n", best_entrypoint);
-				}
-			}
-
 			// Reconstruct PE imports aggressively using our knowledge of all the exports addresses in this process
 			// Technique:
 			//   1. 'exports' defines all valid export addresses in this process
@@ -1814,54 +1854,6 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 		}
 		else if( this->_parsed_pe_64 )
 		{
-			// Re-build the Original Entry Point OEP if it looks to be not valid
-			if (hash_database != NULL && (_header_pe64->OptionalHeader.AddressOfEntryPoint == 0 ||
-				_header_pe64->OptionalHeader.AddressOfEntryPoint == 0x2000 ||
-				!range_fits(_image_size, _header_pe64->OptionalHeader.AddressOfEntryPoint, 20) ||
-				_options->ForceReconstructEntryPoint))
-			{
-				printf("INFO: Re-building entrypoint. Original entrypoint invalid: %x\n", _header_pe64->OptionalHeader.AddressOfEntryPoint);
-
-				// The entry-point looks invalid, search for candidates to reconstruct it
-				unsigned __int64 best_entrypoint = 0;
-				const auto entrypoints = hash_database->snapshot_entrypoints();
-
-				for (__int64 offset = 0x1000; !entrypoints->short_hashes.empty() && _image_size >= 8 && offset < _image_size - 8; offset += 1)
-				{
-					// Check if this is a possible entrypoint
-					unsigned __int64 cand = *((__int64*)(_image + offset));
-
-					// Lookup the address
-					if (cand >= entrypoints->minimum && cand <= entrypoints->maximum && entrypoints->short_hashes.count(cand) != 0)
-					{
-						// This is a possible entrypoint, this is a weak correlation but we'll use it if it's all we have
-						if (best_entrypoint == 0)
-						{
-							best_entrypoint = offset;
-						}
-						if (_options->Verbose)
-							printf("INFO: Possible entrypoint found (weak): %x\n", offset);
-
-						// Validate that the full hash matches a known entrypoint
-						cand = _hash_asm(offset);
-						if (entrypoints->full.count(cand) != 0)
-						{
-							best_entrypoint = offset;
-							printf("INFO: Possible entrypoint found (strong): %x\n", offset);
-							if (!_options->Verbose)
-								break;
-						}
-					}
-				}
-
-				// Update the entrypoint
-				if (best_entrypoint != 0)
-				{
-					_header_pe64->OptionalHeader.AddressOfEntryPoint = best_entrypoint;
-					printf("INFO: Updated entrypoint to: %x\n", best_entrypoint);
-				}
-			}
-
 			// Reconstruct PE imports aggressively using our knowledge of all the exports addresses in this process
 			// Technique:
 			//   1. 'exports' defines all valid export addresses in this process

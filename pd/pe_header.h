@@ -45,6 +45,7 @@ struct IMPORT_SUMMARY
 
 class pe_header
 {
+	friend struct entrypoint_benchmark;
 	
 	unsigned __int64 _unique_hash;
 	unsigned __int64 _unique_hash_ep;
@@ -108,6 +109,8 @@ class pe_header
 	bool _writable_data_range(SIZE_T rva, SIZE_T width) const;
 	bool _reexecution_import_ranges(std::vector<std::pair<SIZE_T, SIZE_T>>& ranges) const;
 	bool _reexecution_cookie_rva(SIZE_T& rva) const;
+	bool _executable_range(SIZE_T rva, SIZE_T length) const;
+	void _recover_entrypoint(pe_hash_database* database);
 	
 	unsigned __int64 _hash_asm(SIZE_T offset);
 	unsigned __int64 _hash_short_asm(SIZE_T offset);

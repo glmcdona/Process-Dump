@@ -116,6 +116,15 @@
     <ClInclude Include="work_queue.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="work_pool.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="module_work.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="system_work.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="nmd_assembly.h">
       <Filter>Header Files</Filter>
     </ClInclude>

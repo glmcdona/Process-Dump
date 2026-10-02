@@ -12,6 +12,7 @@
 #include "pe_header.h"
 #include "simple.h"
 #include <windows.h>          // std::mutex
+#include "work_pool.h"
 
 
 
@@ -42,6 +43,7 @@ private:
 	std::shared_ptr<const entrypoint_hashes> _entrypoint_snapshot;
 
 	bool _is_mz(FILE* stream);
+	bool _add_folder(char* dir_name, WCHAR* filter, bool recursively, work_pool& pool, size_t& queued);
 	CRITICAL_SECTION _lock;
 
 public:
@@ -57,7 +59,7 @@ public:
 	bool add_hashes(const unordered_set<unsigned __int64>& hashes);
 	bool add_hashes_eps(const unordered_set<unsigned __int64>& hashes, const unordered_set<unsigned __int64>& hashes_short);
 
-	bool add_folder( char* dir_name, WCHAR* filter, bool recursively );
+	bool add_folder(char* dir_name, WCHAR* filter, bool recursively, int threads = 1);
 	bool remove_folder( char* dir_name, WCHAR* filter, bool recursively );
 	bool contains(unsigned __int64 hash);
 	bool contains_epshort(unsigned __int64 hash);
