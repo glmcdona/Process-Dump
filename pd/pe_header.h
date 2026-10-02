@@ -53,56 +53,59 @@ class pe_header
 	unsigned __int64 _unique_hash_ep;
 	unsigned __int64 _unique_hash_ep_short;
 
-	PD_OPTIONS* _options;
+	PD_OPTIONS* _options = NULL;
 
-	stream_wrapper* _stream;
-	void* _original_base;
+	stream_wrapper* _stream = NULL;
+	void* _original_base = NULL;
 
 
-	SIZE_T _raw_header_size;
-	unsigned char* _raw_header;
-	SIZE_T _image_size;
-	unsigned char* _image;
-	SIZE_T _disk_image_size;
-	unsigned char* _disk_image;
+	SIZE_T _raw_header_size = 0;
+	unsigned char* _raw_header = NULL;
+	SIZE_T _image_size = 0;
+	unsigned char* _image = NULL;
+	SIZE_T _disk_image_size = 0;
+	unsigned char* _disk_image = NULL;
 	
 
 	// Extracted current and original filename information about this module
 	SIZE_T _name_filepath_short_size;
-	char* _name_filepath_short;
+	char* _name_filepath_short = NULL;
 	SIZE_T _name_filepath_long_size;
-	char* _name_filepath_long;
+	char* _name_filepath_long = NULL;
 	SIZE_T _name_original_exports_size;
-	char* _name_original_exports;
+	char* _name_original_exports = NULL;
 	SIZE_T _name_original_manifest_size;
-	char* _name_original_manifest;
+	char* _name_original_manifest = NULL;
 	SIZE_T _name_symbols_path_size;
-	char* _name_symbols_path;
+	char* _name_symbols_path = NULL;
 
 
 	bool _parsed_dos;
-	IMAGE_DOS_HEADER* _header_dos;
+	IMAGE_DOS_HEADER* _header_dos = NULL;
 
 	bool _parsed_pe_32;
-	IMAGE_NT_HEADERS32* _header_pe32;
+	IMAGE_NT_HEADERS32* _header_pe32 = NULL;
 	bool _parsed_pe_64;
-	IMAGE_NT_HEADERS64* _header_pe64;
-	int _correction_offset;
+	IMAGE_NT_HEADERS64* _header_pe64 = NULL;
+	int _correction_offset = 0;
 
 	// Import table
-	int _header_import_descriptors_count;
-	IMAGE_IMPORT_DESCRIPTOR* _header_import_descriptors;
+	int _header_import_descriptors_count = 0;
+	IMAGE_IMPORT_DESCRIPTOR* _header_import_descriptors = NULL;
 
 	// Export table
-	IMAGE_EXPORT_DIRECTORY* _header_export_directory;
-	export_list* _export_list;
+	IMAGE_EXPORT_DIRECTORY* _header_export_directory = NULL;
+	export_list* _export_list = NULL;
 	
 	bool _parsed_sections;
-	int _num_sections;
-	IMAGE_SECTION_HEADER* _header_sections;
-	DWORD* _header_section_sizes;
+	int _num_sections = 0;
+	IMAGE_SECTION_HEADER* _header_sections = NULL;
+	DWORD* _header_section_sizes = NULL;
 
 	bool _test_read( unsigned char* buffer, SIZE_T length, unsigned char* read_ptr, SIZE_T read_length );
+	void _clear_images();
+	void _clear_header();
+	bool _reject_size();
 	
 	unsigned __int64 _hash_asm(SIZE_T offset);
 	unsigned __int64 _hash_short_asm(SIZE_T offset);

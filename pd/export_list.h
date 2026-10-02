@@ -23,7 +23,7 @@ public:
 	unsigned __int64 rva;
 	unsigned __int64 address;
 
-	export_entry(char* library_name, char* name, WORD ord, unsigned __int64 rva, unsigned __int64 address, bool is64);
+	export_entry(const char* library_name, const char* name, WORD ord, unsigned __int64 rva, unsigned __int64 address, bool is64);
 	export_entry(export_entry* other);
 	~export_entry(void);
 };

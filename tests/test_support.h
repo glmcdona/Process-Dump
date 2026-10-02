@@ -4,6 +4,15 @@
 #include <vector>
 #include <stdexcept>
 #include <string>
+#include <functional>
+
+using test_case = std::pair<const char*, std::function<void()>>;
+
+void append_stream_tests(std::vector<test_case>& tests);
+void append_pe_safety_tests(std::vector<test_case>& tests);
+void append_name_safety_tests(std::vector<test_case>& tests);
+void append_hook_tests(std::vector<test_case>& tests);
+void append_output_tests(std::vector<test_case>& tests);
 
 inline void require(bool condition, const char* message)
 {

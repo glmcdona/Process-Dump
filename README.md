@@ -33,6 +33,16 @@ The `--baseline` selector runs the compatibility suite. Its expected PE dump siz
 
 CI builds and runs tests for all four Debug/Release and Win32/x64 combinations on Windows. Development, tagged, and manually selected-commit releases reuse this tested build; release publication is separate from read-only PR builds. Compiler stack checks, Control Flow Guard, ASLR, and DEP are explicitly enabled.
 
+## Handling untrusted input
+
+PE headers, sections, imports, and exports are treated as untrusted data. Invalid ranges and reconstruction sizes above 256 MiB per image are rejected with a diagnostic instead of attempting unsafe allocations. This limit also applies to generated headers and reconstructed disk images.
+
+Process and module names are encoded as single filename components. Dump files are **created only if the path does not exist**: existing dumps, hard links, and symbolic links are never overwritten. Use a fresh output directory when repeating a dump. Output directories containing reparse points (including junctions), unsupported device paths, and names exceeding supported Windows path/component lengths are rejected. Use an ordinary directory you control, outside the target's writable directories.
+
+Close monitoring uses a private release event rather than accepting a target-supplied thread ID. Stopping monitoring restores the original entry bytes and protection, then releases callbacks even if they have not started waiting yet. A published callback's two-page allocation and target-side event handle remain until that target exits; reclaiming them earlier could free code beneath an in-flight thread. Unpublished allocations and handles are cleaned up on failure.
+
+`pd_tests.exe --security` runs bounded validation and mock-based lifecycle tests; the tests contain no exploit PoCs and do not hook other processes.
+
 # Command-line arguments
 Process dump can be used to dump all unknown code from memory ('-system' flag), dump specific processes, or run in a monitoring mode that dumps all processes just before they terminate.
 

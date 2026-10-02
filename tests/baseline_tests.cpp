@@ -55,7 +55,8 @@ static void pe_roundtrip(bool win64, bool imports)
 	header.process_export_directory();
 	export_list exports;
 	require(header.process_disk_image(&exports, NULL), "disk reconstruction failed");
-	header.write_image(output.path);
+	require(DeleteFileA(output.path) != 0, "could not reserve unused output filename");
+	require(header.write_image(output.path), "dump write failed");
 	std::vector<unsigned char> bytes = output.read();
 	require(bytes.size() >= 0x2000, "dump truncated");
 	require(bytes[0] == 'M' && bytes[1] == 'Z' && bytes[0x1000] == 0x90, "dump data changed");
@@ -131,7 +132,7 @@ int main(int argc, char** argv)
 	_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
 #endif
 	setvbuf(stdout, NULL, _IONBF, 0);
-	const std::pair<const char*, std::function<void()>> tests[] = {
+	std::vector<test_case> tests = {
 		{"crc-vectors", crc_vectors}, {"file-stream", file_stream_roundtrip},
 		{"process-stream", process_stream_roundtrip},
 		{"pe32-roundtrip", [] { pe_roundtrip(false, false); }},
@@ -143,10 +144,20 @@ int main(int argc, char** argv)
 		{"export-lookup", export_lookup}, {"database-roundtrip", database_roundtrip},
 		{"queue-fifo", queue_fifo}
 	};
+	if (argc > 1 && strcmp(argv[1], "--security") == 0)
+		tests.clear();
+	if (argc == 1 || strcmp(argv[1], "--baseline") != 0)
+	{
+		append_stream_tests(tests);
+		append_pe_safety_tests(tests);
+		append_name_safety_tests(tests);
+		append_hook_tests(tests);
+		append_output_tests(tests);
+	}
 	int failures = 0, count = 0;
 	for (const auto& test : tests)
 	{
-		if (argc > 1 && strcmp(argv[1], test.first) != 0 && strcmp(argv[1], "--baseline") != 0)
+		if (argc > 1 && strcmp(argv[1], test.first) != 0 && strcmp(argv[1], "--baseline") != 0 && strcmp(argv[1], "--security") != 0)
 			continue;
 		++count;
 		try { test.second(); printf("PASS %s\n", test.first); }

@@ -1,8 +1,21 @@
 #pragma once
 
+#include <windows.h>
+#include <stdint.h>
+
+static const SIZE_T MAX_PE_IMAGE_SIZE = 256u * 1024u * 1024u;
+
+inline bool range_fits(SIZE_T length, SIZE_T offset, SIZE_T count)
+{
+	return offset <= length && count <= length - offset;
+}
+
 static bool test_read( unsigned char* buffer, SIZE_T length, unsigned char* read_ptr, SIZE_T read_length )
 {
-	return read_ptr >= buffer && read_ptr + read_length <= buffer + length;
+	const uintptr_t start = reinterpret_cast<uintptr_t>(buffer);
+	const uintptr_t address = reinterpret_cast<uintptr_t>(read_ptr);
+	return buffer != NULL && read_ptr != NULL && address >= start &&
+		range_fits(length, address - start, read_length);
 };
 
 

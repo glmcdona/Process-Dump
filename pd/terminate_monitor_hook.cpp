@@ -1,519 +1,252 @@
 #include "stdafx.h"
 #include "terminate_monitor_hook.h"
 
+namespace
+{
+	const SIZE_T hook_code_offset = 0x1000;
+	const SIZE_T hook_allocation_size = 0x2000;
+
+	struct hook_data
+	{
+		unsigned __int64 waiting;
+		unsigned __int64 release_event;
+		unsigned __int64 wait_for_event;
+		unsigned __int64 terminate;
+	};
+	static_assert(sizeof(hook_data) == 32, "Hook data offsets must match both architectures");
+}
+
+bool terminate_monitor_hook::executable_address(unsigned __int64 address)
+{
+	if (address == 0 || address > UINTPTR_MAX)
+		return false;
+	MEMORY_BASIC_INFORMATION region = {};
+	return VirtualQueryEx(_ph, (LPCVOID)address, &region, sizeof(region)) == sizeof(region) &&
+		region.State == MEM_COMMIT && !(region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
+		(region.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+}
+
+bool terminate_monitor_hook::restore_protection()
+{
+	if (!_protection_changed)
+		return true;
+	DWORD previous;
+	if (!VirtualProtectEx(_ph, (LPVOID)_address_terminate, sizeof(_original_hook_bytes), _original_protection, &previous))
+	{
+		PrintLastError(L"Restoring terminate protection");
+		return false;
+	}
+	_protection_changed = false;
+	return true;
+}
 
 bool terminate_monitor_hook::add_redirect(unsigned __int64 target_address)
 {
-	SIZE_T num_written = 0;
-	unsigned char inject[0x20];
-	int num_write = 0;
-
-	if (!_is64)
+	unsigned char jump[14] = {};
+	SIZE_T size;
+	if (_is64)
 	{
-		// near jmp to injected code
-		unsigned char data[] = {
-			0xE9, 0x00, 0x00, 0x00, 0x00
-		};
-
-		*(unsigned __int32*)(data + 1) = (unsigned __int32)(target_address - _address_terminate - 5);
-		memcpy(inject, data, sizeof(data));
-		num_write = sizeof(data);
+		jump[0] = 0xff;
+		jump[1] = 0x25; // jmp qword ptr [rip]
+		memcpy(jump + 6, &target_address, sizeof(target_address));
+		size = sizeof(jump);
 	}
 	else
 	{
-		// 64-bit code
-		unsigned char data[] = {
-			// call +0
-			0xE8, 0x00, 0x00, 0x00, 0x00,
-
-			// pop rax
-			0x58,
-
-			// add rax, 0x7
-			0x48, 0x83, 0xC0, 0x07,
-
-			// jmp [rax]
-			0xFF, 0x20,
-
-			// <target>
-			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <target_address>
-		};
-
-		*(unsigned __int64*)(data + 12) = (unsigned __int64)(target_address);
-		memcpy(inject, data, sizeof(data));
-		num_write = sizeof(data);
+		jump[0] = 0xe9;
+		const DWORD relative = static_cast<DWORD>(target_address - _address_terminate - 5);
+		memcpy(jump + 1, &relative, sizeof(relative));
+		size = 5;
 	}
-	
-	
-	// Write the redirect
-	bool success = WriteProcessMemory(_ph, (LPVOID)  _address_terminate, inject, num_write, &num_written);
-	if (success && num_write == num_written)
-	{
+	if (!VirtualProtectEx(_ph, (LPVOID)_address_terminate, sizeof(_original_hook_bytes),
+		PAGE_EXECUTE_READWRITE, &_original_protection))
+		return false;
+	_protection_changed = true;
+	_redirect_attempted = true;
+	SIZE_T written = 0;
+	const bool success = WriteProcessMemory(_ph, (LPVOID)_address_terminate, jump, size, &written) &&
+		written == size && FlushInstructionCache(_ph, (LPCVOID)_address_terminate, size);
+	const bool protected_again = restore_protection();
+	return success && protected_again;
+}
+
+bool terminate_monitor_hook::close_unpublished_event()
+{
+	if (_remote_event == NULL)
 		return true;
+	HANDLE local_copy = NULL;
+	if (!DuplicateHandle(_ph, _remote_event, GetCurrentProcess(), &local_copy, 0, FALSE,
+		DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS))
+	{
+		PrintLastError(L"Closing unpublished remote event");
+		return false;
 	}
-	
-	return false;
+	CloseHandle(local_copy);
+	_remote_event = NULL;
+	return true;
 }
 
 bool terminate_monitor_hook::unhock_terminate()
 {
-	if (_address_terminate != NULL && _original_hook_bytes != NULL)
+	if (_redirect_attempted && _original_bytes_valid)
 	{
-		// Write the original code back
-		SIZE_T num_written = 0;
-		bool success = WriteProcessMemory(_ph, (LPVOID) _address_terminate, _original_hook_bytes, sizeof(_original_hook_bytes), &num_written);
-
-		// Handle any stuck threads that are waiting to terminate
-		if (is_terminate_waiting())
+		DWORD previous = 0;
+		if (!VirtualProtectEx(_ph, (LPVOID)_address_terminate, sizeof(_original_hook_bytes), PAGE_EXECUTE_READWRITE, &previous))
 		{
-			resume_terminate();
-
-			// no need to cleanup hook allocation since process is terminating
+			PrintLastError(L"Making terminate code writable for restoration");
+			return false;
 		}
-		else
+		_protection_changed = true;
+		SIZE_T written = 0;
+		const bool restored = WriteProcessMemory(_ph, (LPVOID)_address_terminate, _original_hook_bytes,
+			sizeof(_original_hook_bytes), &written) && written == sizeof(_original_hook_bytes) &&
+			FlushInstructionCache(_ph, (LPCVOID)_address_terminate, sizeof(_original_hook_bytes));
+		const bool protected_again = restore_protection();
+		if (!restored || !protected_again)
 		{
-			// Remove our hook allocation
-			if (!_process_is_terminating && _hook_address != NULL)
-				VirtualFreeEx(_ph, (LPVOID)_hook_address, 0, MEM_RELEASE);
+			PrintLastError(L"Restoring terminate code");
+			return false;
 		}
-
-		_hook_address = NULL;
-		_address_is_waiting = NULL;
-		_address_thread_id = NULL;
+		// Signal even if the callback has not started waiting yet. The private manual-reset
+		// event avoids trusting a target-supplied thread ID and cannot lose an early wakeup.
+		if (_release_event != NULL && !SetEvent(_release_event))
+		{
+			PrintLastError(L"Releasing terminate callback");
+			return false;
+		}
+		// Published code and its remote event remain valid for any in-flight callback.
+		// The operating system reclaims them when the monitored process exits.
+		_remote_event = NULL;
 	}
-	
+	else
+	{
+		if (!restore_protection() || !close_unpublished_event())
+			return false;
+		if (_hook_address != 0 && !VirtualFreeEx(_ph, (LPVOID)_hook_address, 0, MEM_RELEASE))
+		{
+			PrintLastError(L"Freeing unpublished terminate hook");
+			return false;
+		}
+	}
+	if (_release_event != NULL)
+		CloseHandle(_release_event);
+	_release_event = NULL;
+	_hook_address = 0;
+	_address_terminate = 0;
+	_original_bytes_valid = false;
+	_redirect_attempted = false;
+	_installed = false;
 	return true;
-}
-
-unsigned __int64 terminate_monitor_hook::get_address(char * library, char * procedure_name)
-{
-	return 0;
-}
-
-bool terminate_monitor_hook::get_terminate_orig_code(unsigned char * out_buffer, int length)
-{
-	return false;
 }
 
 bool terminate_monitor_hook::hook_terminate(export_list* exports)
 {
-	// Allocate space in the remote process for the hook
-	if (_hook_address == NULL)
+	if (_hook_address != 0)
+		return _installed;
+	if (exports == NULL)
 	{
-		_hook_address = (unsigned __int64)VirtualAllocEx(_ph, NULL, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-		if (_hook_address > 0)
-		{
-			// Lookup the function addresses in the target process
-			_address_terminate = exports->find_export("ntdll.dll", "NtTerminateProcess", _is64);
-			unsigned __int64 address_getthread = exports->find_export("kernel32.dll", "GetCurrentThread", _is64);
-			unsigned __int64 address_getthreadid = exports->find_export("kernel32.dll", "GetCurrentThreadId", _is64);
-			unsigned __int64 address_suspendthread = exports->find_export("kernel32.dll", "SuspendThread", _is64);
-
-			if (_address_terminate == NULL || address_getthread == NULL || address_suspendthread == NULL || address_getthreadid == NULL)
-			{
-				if (_options->Verbose)
-				{
-					fprintf(stderr, "WARNING: Failed to find library exports used in hooking ZwTerminateProcess. PID: 0x%x, 64bit mode: %i\n", _pid, (int)_is64);
-					fprintf(stderr, "WARNING: ntdll.dll::NtTerminateProcess = 0x%llX\n", _address_terminate);
-					fprintf(stderr, "WARNING: kernel32.dll::GetCurrentThreadId = 0x%llX\n", address_getthreadid);
-					fprintf(stderr, "WARNING: kernel32.dll::GetCurrentThread = 0x%llX\n", address_getthread);
-					fprintf(stderr, "WARNING: kernel32.dll::SuspendThread = 0x%llX\n", address_suspendthread);
-				}
-			}
-			else
-			{
-				// Found the addresses for our hook code
-
-				// Modify the NtTerminateProcess region to add WRITE privileges
-				//VirtualQueryEx( _ph, _address_terminate, )
-				DWORD old_protection = 0;
-				bool changed = VirtualProtectEx(_ph, (LPVOID) _address_terminate, 0x1000, PAGE_EXECUTE_READWRITE, &old_protection);
-
-				if (changed)
-				{
-					// Read the original code
-					SIZE_T num_read = 0;
-					bool success = ReadProcessMemory(_ph, (LPCVOID)(_address_terminate), (void*)(_original_hook_bytes), sizeof(_original_hook_bytes), &num_read);
-
-					if (num_read == sizeof(_original_hook_bytes) && success)
-					{
-						unsigned char* hook_code = NULL;
-						int hook_code_length = 0;
-
-						if (!_is64)
-						{
-							// Windows 10, wow64 version of ZwTerminateProcess
-							// ntdll.dll -> ZwTerminateProcess()
-							// B8 29 00 00 00          mov     eax, 29h; NtTerminateProcess
-							// 33 C9                   xor     ecx, ecx
-							// 8D 54 24 04             lea     edx, [esp + arg_0]
-							// 64 FF 15 C0 00 00 00    call    large dword ptr fs : 0C0h
-							// 83 C4 04                add     esp, 4
-							// C2 08 00                retn    8
-
-							// ------ Hook (x86/x64 independent code) -------
-							//	is_waiting: (00)
-							//		dq 0
-							//	thread_id: (08)
-							//		dq 0
-							//	GetCurrentThread: (10)
-							//		dq 0
-							//	GetCurrentThreadId: (18)
-							//		dq 0
-							//	SuspendThread: (20)
-							//		dq 0
-							//	TerminateProcess: (28)
-							//		dq 0
-							//  _hook_original_code_length: (30)
-							//		dq 0
-							//	_hook_original_code: (38)
-							//		dq 0
-							//		dq 0
-							//		dq 0
-							//		dq 0
-							//	hook:
-							//		push ebx
-							//		push ecx
-							//		push esi
-							//		push edi
-							//		
-							//		call 0
-							//		pop ebx
-							//		sub ebx, 0x5d  // 5 + 0x58 = 0x5d
-							//
-							//		push eax
-							//		mov eax, [ebx+0x10] // GetCurrentThreadId
-							//		call eax
-							//		mov [ebx+0x08], eax // thread_id
-							//		mov [ebx], 1	// is_waiting
-							//		push eax
-							//		mov eax, [ebx+0x18] // SuspendThread
-							//		call eax
-							//
-							//		mov ecx, [ebx+0x28] // _hook_original_code_length
-							//		mov esi, ebx
-							//		add esi, 0x30 // _hook_original_code
-							//		mov edi, [ebx+0x20] // TerminateProcess
-							//		rep movsb
-							//		
-							//		mov eax, [ebx+0x20] // TerminateProcess
-							//      pop edi
-							//      pop esi
-							//      pop ecx
-							//      pop ebx
-							//
-							//		jmp eax
-
-							unsigned char code[] = {
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <is_waiting>
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <thread_id>
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <GetCurrentThreadId>
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <GetCurrentThread>
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <SuspendThread>
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <TerminateProcess>
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, // <_hook_original_code_length>
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <_hook_original_code>
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <_hook_original_code> + 8
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <_hook_original_code> + 16
-								0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <_hook_original_code> + 24
-
-
-								//		push ebx
-								//		push ecx
-								//		push esi
-								//		push edi
-								0x53, 0x51, 0x56, 0x57,
-
-								//		call 0
-								//		pop ebx
-								//		sub ebx, 0x61  // 5 + 4 + 0x58 = 0x61
-								0xE8, 0x00, 0x00, 0x00, 0x00,
-								0x5B,
-								0x83, 0xEB, 0x61,
-
-								//		mov eax, [ebx+0x10] // GetCurrentThreadId
-								//		call eax
-								//		mov [ebx+0x08], eax // thread_id
-								0x8B, 0x43, 0x10,
-								0xFF, 0xD0,
-								0x89, 0x43, 0x08,
-								
-								//		mov eax, [ebx+0x18] // GetCurrentThread
-								//		call eax
-								0x8B, 0x43, 0x18,
-								0xFF, 0xD0,
-
-								//		mov [ebx], 1	// is_waiting
-								//		push eax
-								//		mov eax, [ebx+0x20] // SuspendThread
-								//		call eax
-								0xC7, 0x03,	0x01, 0x00, 0x00, 0x00,
-								0x50,
-								0x8B, 0x43, 0x20,
-								0xFF, 0xD0,
-
-								//		mov ecx, [ebx+0x30] // _hook_original_code_length
-								//		mov esi, ebx
-								//		add esi, 0x38 // _hook_original_code
-								//		mov edi, [ebx+0x28] // TerminateProcess
-								//		cld
-								//		rep movsb [edi], [esi]
-								0x8B, 0x4B, 0x30,
-								0x89, 0xDE,
-								0x83, 0xC6, 0x38,
-								0x8B, 0x7B, 0x28,
-								0xFC,
-								0xF3, 0xA4,
-
-								//		mov eax, [ebx+0x28] // TerminateProcess
-								0x8B, 0x43, 0x28,
-
-								//      pop edi
-								//      pop esi
-								//      pop ecx
-								//      pop ebx
-								0x5F, 0x5E, 0x59, 0x5B,
-
-								//0xCC,
-
-								//		jmp eax
-								0xFF, 0xE0
-
-							};
-
-							// Fill out the variables in the code
-							//	is_waiting: (00)
-							//		dq 0
-							//	thread_id: (08)
-							//		dq 0
-							//	GetCurrentThreadId: (10)
-							//		dq 0
-							//	SuspendThread: (18)
-							//		dq 0
-							//	TerminateProcess: (20)
-							//		dq 0
-							//  _hook_original_code_length: (28)
-							//		dq 0
-							//	_hook_original_code: (30)
-							//		dq 0
-							//		dq 0
-							hook_code = new unsigned char[sizeof(code)];
-							hook_code_length = sizeof(code);
-							*((unsigned __int64*)(code + 0x10)) = address_getthreadid; // GetCurrentThreadId
-							*((unsigned __int64*)(code + 0x18)) = address_getthread; // GetCurrentThread
-							*((unsigned __int64*)(code + 0x20)) = address_suspendthread; // SuspendThread
-							*((unsigned __int64*)(code + 0x28)) = _address_terminate; // <address_terminate>
-							*((unsigned __int64*)(code + 0x30)) = 32; // _hook_original_code_length
-							memcpy(code + 0x38, _original_hook_bytes, 32); // _hook_original_code
-
-							// Copy to use this code as our hook code
-							memcpy(hook_code, code, sizeof(code));
-						}
-						else
-						{
-							// total size should be 0x47 (compiled code) + 0x58 (variables) = 0x9f
-							unsigned char code64[] = {
-								/*  00  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <is_waiting>
-								/*  08  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <thread_id>
-								/*  10  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <GetCurrentThreadId>
-								/*  18  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <GetCurrentThread>
-								/*  20  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <SuspendThread>
-								/*  28  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <TerminateProcess>
-								/*  30  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, // <_hook_original_code_length>
-								/*  38  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <_hook_original_code>
-								/*  40  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <_hook_original_code> + 8
-								/*  48  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <_hook_original_code> + 16
-								/*  50  */  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // <_hook_original_code> + 24
-
-
-								//		push rbx
-								//		push rcx
-								//		push rsi
-								//		push rdi
-								0x53, 0x51, 0x56, 0x57,
-
-								//		call +0
-								//		pop rbx
-								//		sub rbx, 0x61  // 5 + 4 + 0x58 = 0x61
-								0xE8, 0x00, 0x00, 0x00, 0x00,
-								0x5B,
-								0x48, 0x83, 0xEB, 0x61,
-
-								//		mov rax, [rbx+0x10] // GetCurrentThreadId
-								//		sub rsp, 0x20
-								//		call rax
-								//		add rsp, 0x20
-								//		mov [rbx+0x08], rax // thread_id
-								0x48, 0x8B, 0x43, 0x10,
-								0x48, 0x83, 0xEC, 0x20,
-								0xFF, 0xD0,
-								0x48, 0x83, 0xC4, 0x20,
-								0x48, 0x89, 0x43, 0x08,
-
-								//		mov rax, [rbx+0x18] // GetCurrentThread
-								//		sub rsp, 0x20
-								//		call rax
-								//		add rsp, 0x20
-								0x48, 0x8B, 0x43, 0x18,
-								0x48, 0x83, 0xEC, 0x20,
-								0xFF, 0xD0,
-								0x48, 0x83, 0xC4, 0x20,
-
-								//		mov QWORD [rbx], 1	// is_waiting
-								// 4889C1  mov rcx, rax		; threadid
-								//		mov rax, [rbx+0x20] // SuspendThread
-								//      sub rsp, 0x20
-								//		call rax
-								//		add rsp, 0x20
-								0x48, 0xC7, 0x03, 0x01, 0x00, 0x00, 0x00,
-								0x48, 0x89, 0xC1,
-								0x48, 0x8B, 0x43, 0x20,
-								0x48, 0x83, 0xEC, 0x20,
-								0xFF, 0xD0,
-								0x48, 0x83, 0xC4, 0x20,
-
-								//		mov rcx, [rbx+0x30] // _hook_original_code_length
-								//		mov rsi, rbx
-								//		add rsi, 0x38 // _hook_original_code
-								//		mov rdi, [rbx+0x28] // TerminateProcess
-								//		cld
-								//		rep movsb [rdi], [rsi]
-								0x48, 0x8B, 0x4B, 0x30,
-								0x48, 0x89, 0xDE,
-								0x48, 0x83, 0xC6, 0x38,
-								0x48, 0x8B, 0x7B, 0x28,
-								0xFC,
-								0xF3, 0xA4,
-
-								//		mov rax, [rbx+0x28] // TerminateProcess
-								0x48, 0x8B, 0x43, 0x28,
-
-								//      pop rdi
-								//      pop rsi
-								//      pop rcx
-								//      pop rbx
-								0x5F, 0x5E, 0x59, 0x5B,
-
-								//0xCC,
-
-								//		jmp rax
-								0xFF, 0xE0
-
-							};
-
-							// Fill out the variables in the code
-							//	is_waiting: (00)
-							//		dq 0
-							//	thread_id: (08)
-							//		dq 0
-							//	GetCurrentThreadId: (10)
-							//		dq 0
-							//	SuspendThread: (18)
-							//		dq 0
-							//	TerminateProcess: (20)
-							//		dq 0
-							//  _hook_original_code_length: (28)
-							//		dq 0
-							//	_hook_original_code: (30)
-							//		dq 0
-							//		dq 0
-							hook_code = new unsigned char[sizeof(code64)];
-							hook_code_length = sizeof(code64);
-							*((unsigned __int64*)(code64 + 0x10)) = address_getthreadid; // GetCurrentThreadId
-							*((unsigned __int64*)(code64 + 0x18)) = address_getthread; // GetCurrentThread
-							*((unsigned __int64*)(code64 + 0x20)) = address_suspendthread; // SuspendThread
-							*((unsigned __int64*)(code64 + 0x28)) = _address_terminate; // <address_terminate>
-							*((unsigned __int64*)(code64 + 0x30)) = 32; // _hook_original_code_length
-							memcpy(code64 + 0x38, _original_hook_bytes, 32); // _hook_original_code (_original_hook_bytes is not our hook!)
-
-							// Copy to use this code as our hook code
-							memcpy(hook_code, code64, sizeof(code64));
-						}
-
-						// Inject the hook code
-						SIZE_T num_written = 0;
-						bool success = WriteProcessMemory(_ph, (LPVOID)_hook_address, hook_code, hook_code_length, &num_written);
-						if (hook_code != NULL)
-							delete[]hook_code;
-
-						if (success && num_written == hook_code_length)
-						{
-							// Set the variable addresses in the remote process
-							_address_is_waiting = _hook_address;
-							_address_thread_id = _hook_address + 8;
-
-							// Redirect ZwTerminateProcess
-							return add_redirect(_hook_address + 0x58);
-						}
-						else
-						{
-							PrintLastError(L"Failed to write NtTerminateProcess hook code.");
-						}
-					}
-				}
-			}
-		}
-		else
-		{
-			if( _options->Verbose )
-				PrintLastError(L"Failed to allocate space for NtTerminateProcess hook.");
-		}
-
-		return false; // Failed to hook
+		fprintf(stderr, "ERROR: Cannot install terminate hook without exports.\n");
+		return false;
 	}
-	return true; // Already hooked
+	_address_terminate = exports->find_export("ntdll.dll", "NtTerminateProcess", _is64);
+	unsigned __int64 wait_address = exports->find_export("kernelbase.dll", "WaitForSingleObject", _is64);
+	if (!executable_address(wait_address))
+		wait_address = exports->find_export("kernel32.dll", "WaitForSingleObject", _is64);
+	if (!executable_address(_address_terminate) || !executable_address(wait_address))
+	{
+		if (_options->Verbose)
+			fprintf(stderr, "WARNING: Missing executable terminate/wait exports in PID 0x%x.\n", _pid);
+		return false;
+	}
+	SIZE_T read = 0;
+	if (!ReadProcessMemory(_ph, (LPCVOID)_address_terminate, _original_hook_bytes, sizeof(_original_hook_bytes), &read) ||
+		read != sizeof(_original_hook_bytes))
+	{
+		PrintLastError(L"Reading original terminate code");
+		return false;
+	}
+	_original_bytes_valid = true;
+	_release_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+	if (_release_event == NULL || !DuplicateHandle(GetCurrentProcess(), _release_event, _ph, &_remote_event,
+		SYNCHRONIZE, FALSE, 0))
+	{
+		PrintLastError(L"Creating terminate release event");
+		unhock_terminate();
+		return false;
+	}
+	_hook_address = reinterpret_cast<uintptr_t>(VirtualAllocEx(_ph, NULL, hook_allocation_size,
+		MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+	if (_hook_address == 0 || (!_is64 && (_hook_address + hook_allocation_size > MAXDWORD ||
+		reinterpret_cast<uintptr_t>(_remote_event) > MAXDWORD)))
+	{
+		PrintLastError(L"Allocating terminate callback");
+		unhock_terminate();
+		return false;
+	}
+
+	// Preserve the original NtTerminateProcess arguments; only the host restores its entry
+	// bytes. Data stays RW and the callback's separate page becomes RX before publication.
+	unsigned char code32[] = {
+		0x53, 0x51, 0x52,                         // push ebx, ecx, edx
+		0xbb, 0, 0, 0, 0,                        // mov ebx, data
+		0xc7, 0x03, 1, 0, 0, 0,                  // mov dword ptr [ebx], 1
+		0x6a, 0xff, 0xff, 0x73, 0x08,            // push INFINITE; push [ebx+8]
+		0xff, 0x53, 0x10,                        // call [ebx+16]
+		0x8b, 0x43, 0x18,                        // mov eax, [ebx+24]
+		0x5a, 0x59, 0x5b, 0xff, 0xe0             // restore arguments; jmp eax
+	};
+	unsigned char code64[] = {
+		0x53, 0x51, 0x52,                         // push rbx, rcx, rdx (align stack)
+		0x48, 0xbb, 0, 0, 0, 0, 0, 0, 0, 0,      // mov rbx, data
+		0x48, 0xc7, 0x03, 1, 0, 0, 0,            // mov qword ptr [rbx], 1
+		0x48, 0x8b, 0x4b, 0x08,                  // mov rcx, [rbx+8]
+		0xba, 0xff, 0xff, 0xff, 0xff,             // mov edx, INFINITE
+		0x48, 0x83, 0xec, 0x20,                  // allocate shadow space
+		0xff, 0x53, 0x10,                        // call [rbx+16]
+		0x48, 0x83, 0xc4, 0x20,
+		0x48, 0x8b, 0x43, 0x18,                  // mov rax, [rbx+24]
+		0x5a, 0x59, 0x5b, 0xff, 0xe0             // restore arguments; jmp rax
+	};
+	const DWORD address32 = static_cast<DWORD>(_hook_address);
+	memcpy(code32 + 4, &address32, sizeof(address32));
+	memcpy(code64 + 5, &_hook_address, sizeof(_hook_address));
+	const unsigned char* code = _is64 ? code64 : code32;
+	const SIZE_T code_size = _is64 ? sizeof(code64) : sizeof(code32);
+	hook_data data = {0, reinterpret_cast<uintptr_t>(_remote_event), wait_address, _address_terminate};
+	SIZE_T written = 0;
+	DWORD old_protection = 0;
+	if (!WriteProcessMemory(_ph, (LPVOID)_hook_address, &data, sizeof(data), &written) || written != sizeof(data) ||
+		!WriteProcessMemory(_ph, (LPVOID)(_hook_address + hook_code_offset), code, code_size, &written) || written != code_size ||
+		!VirtualProtectEx(_ph, (LPVOID)(_hook_address + hook_code_offset), 0x1000, PAGE_EXECUTE_READ, &old_protection) ||
+		!FlushInstructionCache(_ph, (LPCVOID)(_hook_address + hook_code_offset), code_size) ||
+		!add_redirect(_hook_address + hook_code_offset))
+	{
+		PrintLastError(L"Publishing terminate callback");
+		unhock_terminate();
+		return false;
+	}
+	_installed = true;
+	return true;
 }
 
 bool terminate_monitor_hook::is_terminate_waiting()
 {
-	if (_hook_address != NULL && _address_is_waiting != NULL )
-	{
-		unsigned __int64 value = 0;
-		SIZE_T num_read = 0;
-		bool success = ReadProcessMemory(_ph, (LPCVOID) _address_is_waiting, &value, sizeof(value), &num_read);
-		if (success && num_read == sizeof(value))
-		{
-			return value == 1;
-		}
-	}
-	return false;
+	unsigned __int64 waiting = 0;
+	return _installed && read_memory(_ph, _hook_address, &waiting) && waiting == 1;
 }
 
-void terminate_monitor_hook::resume_terminate()
+bool terminate_monitor_hook::resume_terminate()
 {
-	if (is_terminate_waiting() && _address_thread_id != NULL)
-	{
-		DWORD tid = 0;
-		if ( read_memory(_ph, _address_thread_id, &tid) && tid != 0 )
-		{
-			// Set it's state to no longer waiting to terminate
-			write_memory(_ph, _address_is_waiting, (unsigned __int64)0);
-
-			// Resume this thread in the target process
-			HANDLE th = OpenThread(THREAD_SUSPEND_RESUME, false, tid);
-			DWORD result = ResumeThread(th);
-
-			_process_is_terminating = true;
-		}
-	}
+	return unhock_terminate();
 }
 
 terminate_monitor_hook::terminate_monitor_hook(HANDLE ph, DWORD pid, bool is64, PD_OPTIONS* options)
+	: _ph(ph), _pid(pid), _is64(is64), _options(options)
 {
-	_ph = ph;
-	_pid = pid;
-	_is64 = is64;
-	_hook_address = NULL;
-	_address_is_waiting = NULL;
-	_address_thread_id = NULL;
-	_address_terminate = NULL;
-	_process_is_terminating = false;
-	_options = options;
 }
-
 
 terminate_monitor_hook::~terminate_monitor_hook()
 {
-	// Remove our redirect from this process if it is in place
-	unhock_terminate();
+	if (!unhock_terminate() && _release_event != NULL)
+		CloseHandle(_release_event);
 }

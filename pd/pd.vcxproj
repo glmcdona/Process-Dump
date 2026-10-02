@@ -280,6 +280,8 @@
   <ItemGroup>
     <ClInclude Include="close_watcher.h" />
     <ClInclude Include="dump_process.h" />
+    <ClInclude Include="dump_output.h" />
+    <ClInclude Include="dump_path.h" />
     <ClInclude Include="DynArray.h" />
     <ClInclude Include="export_list.h" />
     <ClInclude Include="hash.h" />
