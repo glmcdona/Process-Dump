@@ -1,45 +1,40 @@
 name: Build
 
-on: [push]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
 
-env:
-  # Path to the solution file relative to the root of the project.
-  SOLUTION_FILE_PATH: .
-
-  # Configuration type to build.
-  # You can convert this to a build matrix if you need coverage of multiple configuration types.
-  # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
-  BUILD_CONFIGURATION: Release
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: windows-latest
-    
+    runs-on: windows-2022
     strategy:
+      fail-fast: false
       matrix:
-        targetPlatform: [Win32, x64]
-    
-    env:
-      BUILD_FILE_PATH: .\${{ matrix.targetPlatform }}\Release\pd.exe
-
+        platform: [Win32, x64]
+        configuration: [Debug, Release]
     steps:
-    - uses: actions/checkout@v2
-
-    - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v1.0.2
-
-    - name: Restore NuGet packages
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: nuget restore ${{env.SOLUTION_FILE_PATH}}
-
-    - name: Build
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      # Add additional options to the MSBuild command line here (like platform or verbosity level).
-      # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
-      run: msbuild /m /p:Configuration=${{ env.BUILD_CONFIGURATION }} ${{ env.SOLUTION_FILE_PATH }} /p:Platform=${{ matrix.targetPlatform }}
-    
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v2
-      with:
-        name: ${{ matrix.targetPlatform }} Executable
-        path: ${{ env.BUILD_FILE_PATH }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build application and unit tests
+        run: msbuild pd.sln /m /v:minimal /p:Configuration=${{ matrix.configuration }} /p:Platform=${{ matrix.platform }}
+      - name: Run unit tests
+        run: |
+          & ".\${{ matrix.platform }}\${{ matrix.configuration }}\pd_tests.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: matrix.configuration == 'Release'
+        with:
+          name: ${{ matrix.platform }} Executable
+          path: .\${{ matrix.platform }}\Release\pd.exe
+          if-no-files-found: error

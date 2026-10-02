@@ -18,7 +18,20 @@ You can download the latest compiled release of Process Dump here:
 * https://github.com/glmcdona/Process-Dump/releases
 
 # Compiling source code
-This is designed for Visual Studio 2019 and works with the free Community edition. Just open the project file with VS2019 and compile, it should be that easy!
+Open `pd.sln` in Visual Studio 2019 or 2022 with the Desktop development with C++ workload and a Windows 10/11 SDK installed. The solution builds the application and a dependency-free unit-test executable, using v142 on VS2019 and v143 on VS2022. Debug and Release builds are supported on Win32 and x64.
+
+From a Visual Studio Developer PowerShell:
+
+```powershell
+msbuild pd.sln /m /p:Configuration=Release /p:Platform=x64
+.\x64\Release\pd_tests.exe
+```
+
+Use `Platform=Win32` and `.\Win32\Release\pd_tests.exe` for 32-bit builds, or `Configuration=Debug` and the corresponding `Debug` directory. Tests use generated benign PE fixtures and this test process only; no administrator privileges, malware, or system-wide dumping are required. Failures exit nonzero and CRT assertions are reported to stderr instead of opening a blocking dialog.
+
+The `--baseline` selector runs the compatibility suite. Its expected PE dump sizes, CRC32s, import-table bytes, and PE hashes were captured on the original implementation before security fixes, on both architectures. These expectations are checked on every run; security cases intentionally require safer behavior for malformed inputs. A single case can also be selected by its printed name.
+
+CI builds and runs tests for all four Debug/Release and Win32/x64 combinations on Windows. Development, tagged, and manually selected-commit releases reuse this tested build; release publication is separate from read-only PR builds. Compiler stack checks, Control Flow Guard, ASLR, and DEP are explicitly enabled.
 
 # Command-line arguments
 Process dump can be used to dump all unknown code from memory ('-system' flag), dump specific processes, or run in a monitoring mode that dumps all processes just before they terminate.
