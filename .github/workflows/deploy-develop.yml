@@ -15,28 +15,45 @@ jobs:
     needs: build
     runs-on: windows-2022
     permissions:
+      actions: read
       contents: write
+    concurrency:
+      group: publish-Develop
+      cancel-in-progress: false
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          name: Win32 Executable
-          path: binaries\Win32
-      - uses: actions/download-artifact@v4
-        with:
-          name: x64 Executable
-          path: binaries\x64
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Prepare allowlisted artifact bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: Develop
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: python -I .github\scripts\release_artifacts.py
       - name: Publish tested development binaries
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          Move-Item binaries\Win32\pd.exe pd32.exe
-          Move-Item binaries\x64\pd.exe pd64.exe
-          gh release view Develop
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload Develop pd32.exe pd64.exe --clobber
+          if ($env:GITHUB_EVENT_NAME -eq "push") {
+            $current = gh api "repos/$env:GH_REPO/git/ref/heads/main" --jq .object.sha
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($current -ne $env:RELEASE_COMMIT) {
+              Write-Host "Skipping superseded main build $env:RELEASE_COMMIT"
+              exit 0
+            }
+          }
+          $release = gh api --paginate "repos/$env:GH_REPO/releases?per_page=100" --jq '.[] | select(.tag_name == "Develop") | .id'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $notes = "Development binaries from $env:RELEASE_COMMIT. Verify both assets against provenance.json; the historical Develop tag is not moved."
+          if ($release) {
+            gh release upload Develop release-binaries\pd32.exe release-binaries\pd64.exe release-binaries\provenance.json --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gh release edit Develop --notes $notes
           } else {
-            gh release create Develop pd32.exe pd64.exe --target $env:RELEASE_COMMIT --title Develop --prerelease --notes "Development binaries"
+            gh release create Develop release-binaries\pd32.exe release-binaries\pd64.exe release-binaries\provenance.json --target $env:RELEASE_COMMIT --title Develop --prerelease --notes $notes
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
