@@ -60,13 +60,13 @@ static void pe_roundtrip(bool win64, bool imports)
 	std::vector<unsigned char> bytes = output.read();
 	require(bytes.size() >= 0x2000, "dump truncated");
 	require(bytes[0] == 'M' && bytes[1] == 'Z' && bytes[0x1000] == 0x90, "dump data changed");
-	const DWORD expected_crc = imports ? (win64 ? 0x11056f9c : 0xd6ca78d0) : (win64 ? 0x0f6a2ed3 : 0xfd941dbd);
-	require(bytes.size() == (imports ? 12288 : 8192), "baseline dump size changed");
-	require(crc32buf(reinterpret_cast<char*>(bytes.data()), bytes.size()) == expected_crc, "baseline dump bytes changed");
-	require(header.get_hash() == (imports ? 0xcd4757e79d476f71ULL : 0xcd8757e79d476f71ULL), "baseline PE hash changed");
 	printf("FINGERPRINT PE%s imports=%d size=%zu crc=%08lx hash=%016llx\n",
 		win64 ? "64" : "32", imports, bytes.size(),
 		crc32buf(reinterpret_cast<char*>(bytes.data()), bytes.size()), header.get_hash());
+	const DWORD expected_crc = imports ? (win64 ? 0x64a456d2 : 0xd9e601a9) : (win64 ? 0x0f6a2ed3 : 0xfd941dbd);
+	require(bytes.size() == (imports ? 12288 : 8192), "baseline dump size changed");
+	require(crc32buf(reinterpret_cast<char*>(bytes.data()), bytes.size()) == expected_crc, "baseline dump bytes changed");
+	require(header.get_hash() == (imports ? 0x391c57a138fafe6cULL : 0xcd8757e79d476f71ULL), "baseline PE hash changed");
 }
 
 static void import_table_roundtrip(bool win64)
@@ -153,6 +153,7 @@ int main(int argc, char** argv)
 		append_name_safety_tests(tests);
 		append_hook_tests(tests);
 		append_output_tests(tests);
+		append_reconstruction_tests(tests);
 	}
 	int failures = 0, count = 0;
 	for (const auto& test : tests)

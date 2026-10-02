@@ -394,3 +394,6 @@ FakesAssemblies/
 # Visual Studio 6 workspace options file
 *.opt
 >>>>>>> d26ace875aaef086a6992374a3169ca5c6db031d
+
+# Python benchmark analysis
+__pycache__

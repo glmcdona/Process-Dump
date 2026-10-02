@@ -24,9 +24,6 @@ using namespace std::tr1;
 #define EP_HASH_OPCODES_MIN 30
 #define EP_HASH_OPCODES_MAX 100
 
-// 10MB
-#define MAX_SECTION_SIZE (1024 * 1000) * 60
-
 class pe_hash_database;
 
 static bool static_zero_init = false;
@@ -106,6 +103,8 @@ class pe_header
 	void _clear_images();
 	void _clear_header();
 	bool _reject_size();
+	bool _append_import_section(DWORD rva, DWORD size);
+	bool _pack_disk_image(unsigned char* image, SIZE_T size);
 	
 	unsigned __int64 _hash_asm(SIZE_T offset);
 	unsigned __int64 _hash_short_asm(SIZE_T offset);

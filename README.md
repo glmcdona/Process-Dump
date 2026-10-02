@@ -29,9 +29,32 @@ msbuild pd.sln /m /p:Configuration=Release /p:Platform=x64
 
 Use `Platform=Win32` and `.\Win32\Release\pd_tests.exe` for 32-bit builds, or `Configuration=Debug` and the corresponding `Debug` directory. Tests use generated benign PE fixtures and this test process only; no administrator privileges, malware, or system-wide dumping are required. Failures exit nonzero and CRT assertions are reported to stderr instead of opening a blocking dialog.
 
-The `--baseline` selector runs the compatibility suite. Its expected PE dump sizes, CRC32s, import-table bytes, and PE hashes were captured on the original implementation before security fixes, on both architectures. These expectations are checked on every run; security cases intentionally require safer behavior for malformed inputs. A single case can also be selected by its printed name.
+The `--baseline` selector runs the compatibility suite. Non-reconstructed PE dumps and import-table serialization retain the fingerprints captured before the security fixes. Import-reconstructed fixtures now expect a separate `.pdimp` section rather than extension of the last section; their CRC32s and structural hashes were intentionally updated for that layout change. Expectations are checked on every run. A single case can also be selected by its printed name.
 
 CI builds and runs tests for all four Debug/Release and Win32/x64 combinations on Windows. Development, tagged, and manually selected-commit releases reuse this tested build; release publication is separate from read-only PR builds. Compiler stack checks, Control Flow Guard, ASLR, and DEP are explicitly enabled.
+
+## Live reconstruction benchmarks
+
+`tests\benchmark_dumps.py` is an **opt-in** Windows benchmark using Python 3's standard library and Windows PowerShell. It snapshots running processes and dumps each accessible **main executable**, not every DLL or private allocation. It does not elevate, inject, suspend, hook, or terminate target processes. Unavailable/protected processes, exited/replaced PIDs, missing original files, and images over the 256 MiB limit are reported separately, not counted as successful tests.
+
+Keep a baseline build, then run both builds against the same inventory:
+
+```powershell
+python .\tests\benchmark_dumps.py --exe C:\bench\before\pd.exe --report C:\bench\before.json
+python .\tests\benchmark_dumps.py --exe .\x64\Release\pd.exe --snapshot C:\bench\before.json --compare C:\bench\before.json --report C:\bench\after.json
+```
+
+Repeat with `--imports` on **both** commands and distinct report names to exercise aggressive import reconstruction. Use `--pid 1234` (repeatable) or `--name spotify` to narrow a run. Each dumper child has a 30-second timeout, configurable with `--timeout`; a timeout terminates only that child. Dump files are deleted after each comparison, including failed runs. A free-space floor prevents further work below 512 MiB. Reports are never overwritten.
+
+Security software may quarantine reconstructed executables. The benchmark distinguishes unreadable output (`analysis_unavailable`) from invalid PE data (`invalid_dump`); neither counts as success. Do not disable protection to make a benchmark pass. Use `--skip-pid 1234` to record an explicit exclusion when repeating a known-blocked target.
+
+Reports record file sizes, zero-byte fractions, SHA-256 identities, section layout validity, 4 KiB executable-code block matches/losses, elapsed dumping time, and diagnostics. Paired comparisons require the same PID, creation time, path, original-file hash, and import mode. These are live, non-atomic snapshots: relocations, resolved imports, runtime patches, discarded pages, file overlays/signatures, and process exits prevent exact disk/memory equality. Timings include setup/export scanning and are diagnostic measurements, not controlled CPU-performance claims. Suspect flags are investigation leads, not proof of corruption.
+
+Reports contain local process names/paths and diagnostics, but no memory payloads. Keep them private and outside the repository. The analyzer's own portable tests run in CI via `python -m unittest discover -s tests -p test_benchmark_dumps.py`; CI never runs the live sweep.
+
+Reconstruction preserves virtual section sizes and image extent while omitting zero-filled raw tails; initialized runtime data is retained even beyond the original disk section size. Raw sizes and offsets honor file alignment. Reconstructed imports use `.pdimp` when unused section-header space exists; otherwise the last section is explicitly extended with a warning, which can still materialize a large virtual gap. Unmapped certificate references and stale checksums are cleared, and debug payload file offsets are relocated. These dumps are for analysis, not guaranteed runnable or signed copies of the originals.
+
+Native regression cases enforce a maximum 12 KiB dump (16 KiB with imports) for a fixture containing a 4 MiB mostly-zero virtual data section. They also cover valid sections beyond the former 60,000 KiB truncation threshold, sparse RVAs, unaligned image ends, high-address/terminal imports, occupied section-header space, and byte-preserving reloads of 32 varied PE32/PE64 layouts.
 
 ## Handling untrusted input
 

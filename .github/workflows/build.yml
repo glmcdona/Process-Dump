@@ -32,6 +32,8 @@ jobs:
         run: |
           & ".\${{ matrix.platform }}\${{ matrix.configuration }}\pd_tests.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test benchmark analysis
+        run: python -m unittest discover -s tests -p test_benchmark_dumps.py
       - uses: actions/upload-artifact@v4
         if: matrix.configuration == 'Release'
         with:
