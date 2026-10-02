@@ -1385,7 +1385,101 @@ bool pe_header::_append_import_section(DWORD rva, DWORD size)
 	return true;
 }
 
-bool pe_header::_pack_disk_image(const unsigned char* image, SIZE_T size)
+bool pe_header::_writable_data_range(SIZE_T rva, SIZE_T width) const
+{
+	for (int i = 0; i < _num_sections; ++i)
+	{
+		const auto& section = _header_sections[i];
+		const SIZE_T span = (std::max)(section.Misc.VirtualSize, section.SizeOfRawData);
+		if (rva >= section.VirtualAddress && range_fits(span, rva - section.VirtualAddress, width))
+			return (section.Characteristics & IMAGE_SCN_MEM_WRITE) != 0 &&
+				(section.Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0;
+	}
+	return false;
+}
+
+bool pe_header::_reexecution_import_ranges(std::vector<std::pair<SIZE_T, SIZE_T>>& ranges) const
+{
+	const auto& directory = _parsed_pe_32 ? _header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT] :
+		_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+	std::vector<DWORD> delay_iats;
+	if (directory.VirtualAddress != 0)
+	{
+		if (!range_fits(_image_size, directory.VirtualAddress, directory.Size))
+			return false;
+		bool terminated = false;
+		for (SIZE_T offset = 0; range_fits(directory.Size, offset, 8 * sizeof(DWORD)); offset += 8 * sizeof(DWORD))
+		{
+			DWORD fields[8];
+			memcpy(fields, _image + directory.VirtualAddress + offset, sizeof(fields));
+			if (std::all_of(fields, fields + 8, [](DWORD value) { return value == 0; }))
+			{
+				terminated = true;
+				break;
+			}
+			ULONGLONG iat = fields[3];
+			if ((fields[0] & 1) == 0)
+			{
+				const ULONGLONG base = _original_base != NULL ? reinterpret_cast<uintptr_t>(_original_base) :
+					(_parsed_pe_32 ? _header_pe32->OptionalHeader.ImageBase : _header_pe64->OptionalHeader.ImageBase);
+				if (iat < base)
+					return false;
+				iat -= base;
+			}
+			const SIZE_T width = _parsed_pe_32 ? sizeof(DWORD) : sizeof(ULONGLONG);
+			if (iat == 0 || iat > MAX_PE_IMAGE_SIZE || !range_fits(_image_size, static_cast<SIZE_T>(iat), width))
+				return false;
+			delay_iats.push_back(static_cast<DWORD>(iat));
+		}
+		if (!terminated)
+			return false;
+		std::sort(delay_iats.begin(), delay_iats.end());
+	}
+	for (int i = 0; i < _num_sections; ++i)
+	{
+		const auto& section = _header_sections[i];
+		const SIZE_T span = (std::max)(section.Misc.VirtualSize, section.SizeOfRawData);
+		const auto delay = std::lower_bound(delay_iats.begin(), delay_iats.end(), section.VirtualAddress);
+		// The loader can protect delay-IAT sections before binding normal imports.
+		if ((section.Characteristics & IMAGE_SCN_MEM_WRITE) && !(section.Characteristics & IMAGE_SCN_MEM_EXECUTE) &&
+			(delay == delay_iats.end() || *delay - section.VirtualAddress >= span))
+			ranges.emplace_back(section.VirtualAddress, section.SizeOfRawData);
+	}
+	return true;
+}
+
+bool pe_header::_reexecution_cookie_rva(SIZE_T& rva) const
+{
+	rva = _image_size;
+	const auto& config = _parsed_pe_32 ? _header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG] :
+		_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+	const SIZE_T width = _parsed_pe_32 ? sizeof(DWORD) : sizeof(ULONGLONG);
+	const SIZE_T field = _parsed_pe_32 ? offsetof(IMAGE_LOAD_CONFIG_DIRECTORY32, SecurityCookie) :
+		offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie);
+	if (config.VirtualAddress == 0 || config.Size < field + width)
+		return true;
+	if (!range_fits(_image_size, config.VirtualAddress, config.Size))
+		return false;
+	DWORD declared_size = 0;
+	memcpy(&declared_size, _image + config.VirtualAddress, sizeof(declared_size));
+	if (declared_size < field + width)
+		return true;
+	ULONGLONG cookie = 0;
+	memcpy(&cookie, _image + config.VirtualAddress + field, width);
+	if (cookie == 0)
+		return true;
+	const ULONGLONG base = _original_base != NULL ?
+		(_parsed_pe_32 ? static_cast<DWORD>(reinterpret_cast<uintptr_t>(_original_base)) : reinterpret_cast<uintptr_t>(_original_base)) :
+		(_parsed_pe_32 ? _header_pe32->OptionalHeader.ImageBase : _header_pe64->OptionalHeader.ImageBase);
+	if (cookie < base || cookie - base > MAX_PE_IMAGE_SIZE ||
+		!range_fits(_image_size, static_cast<SIZE_T>(cookie - base), width) ||
+		!_writable_data_range(static_cast<SIZE_T>(cookie - base), width))
+		return false;
+	rva = static_cast<SIZE_T>(cookie - base);
+	return true;
+}
+
+bool pe_header::_pack_disk_image(const unsigned char* image, SIZE_T size, SIZE_T cookie_rva)
 {
 	const DWORD alignment = _parsed_pe_32 ? _header_pe32->OptionalHeader.SectionAlignment : _header_pe64->OptionalHeader.SectionAlignment;
 	DWORD& headers_size = _parsed_pe_32 ? _header_pe32->OptionalHeader.SizeOfHeaders : _header_pe64->OptionalHeader.SizeOfHeaders;
@@ -1431,6 +1525,10 @@ bool pe_header::_pack_disk_image(const unsigned char* image, SIZE_T size)
 				range_fits(span, entry.VirtualAddress - section.VirtualAddress, entry.Size))
 				initialized = (std::max<SIZE_T>)(initialized, entry.VirtualAddress - section.VirtualAddress + entry.Size);
 		}
+		const SIZE_T cookie_width = _parsed_pe_32 ? sizeof(DWORD) : sizeof(ULONGLONG);
+		if (cookie_rva < _image_size && cookie_rva >= section.VirtualAddress &&
+			range_fits(span, cookie_rva - section.VirtualAddress, cookie_width))
+			initialized = (std::max)(initialized, cookie_rva - section.VirtualAddress + cookie_width);
 		const __int64 raw_size = _section_align(static_cast<__int64>(initialized), alignment);
 		if (!image_size_fits(raw_size) || !range_fits(MAX_PE_IMAGE_SIZE, required_space, static_cast<SIZE_T>(raw_size)))
 			return _reject_size();
@@ -1485,6 +1583,21 @@ bool pe_header::_pack_disk_image(const unsigned char* image, SIZE_T size)
 				file_offset(entry.AddressOfRawData, entry.SizeOfData, data_offset) ? static_cast<DWORD>(data_offset) : 0;
 		}
 	}
+	if (cookie_rva < _image_size)
+	{
+		const SIZE_T width = _parsed_pe_32 ? sizeof(DWORD) : sizeof(ULONGLONG);
+		SIZE_T offset = 0;
+		if (!file_offset(static_cast<DWORD>(cookie_rva), width, offset))
+		{
+			fprintf(stderr, "WARNING: Cannot prepare '%s' for re-execution: GS cookie has no raw storage.\n", get_name());
+			return false;
+		}
+		// The loader/CRT replaces this ABI sentinel with a fresh process-specific cookie.
+		const ULONGLONG bootstrap = _parsed_pe_32 ? 0xbb40e64eULL : 0x2b992ddfa232ULL;
+		memcpy(_disk_image + offset, &bootstrap, width);
+		if (_options->Verbose)
+			printf("INFO: Restored GS cookie bootstrap value for re-execution of '%s'.\n", get_name());
+	}
 	return true;
 }
 
@@ -1510,6 +1623,44 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 			_header_sections[i].SizeOfRawData > MAX_PE_IMAGE_SIZE)
 			return _reject_size();
 	}
+	std::vector<std::pair<SIZE_T, SIZE_T>> import_ranges;
+	std::vector<std::pair<SIZE_T, SIZE_T>> zero_fill;
+	if (_options->Reexecution)
+		for (int i = 0; i < _num_sections; ++i)
+		{
+			const auto& section = _header_sections[i];
+			if ((section.Characteristics & IMAGE_SCN_MEM_WRITE) && !(section.Characteristics & IMAGE_SCN_MEM_EXECUTE) &&
+				section.Misc.VirtualSize > section.SizeOfRawData)
+			{
+				if (!range_fits(_image_size, section.VirtualAddress, section.Misc.VirtualSize))
+					return _reject_size();
+				zero_fill.emplace_back(section.VirtualAddress + section.SizeOfRawData,
+					section.Misc.VirtualSize - section.SizeOfRawData);
+			}
+		}
+	const auto restore_zero_fill = [&](unsigned char* image) {
+		for (const auto& range : zero_fill)
+			memset(image + range.first, 0, range.second);
+	};
+	SIZE_T cookie_rva = _image_size;
+	if (_options->Reexecution && !_reexecution_cookie_rva(cookie_rva))
+	{
+		fprintf(stderr, "WARNING: Cannot prepare '%s' for re-execution: invalid load configuration or GS cookie location.\n", get_name());
+		return false;
+	}
+	if (_options->Reexecution && _options->ImportRec && !_reexecution_import_ranges(import_ranges))
+	{
+		fprintf(stderr, "WARNING: Cannot prepare '%s' for re-execution: invalid delay-import metadata.\n", get_name());
+		return false;
+	}
+	const auto allow_import = [&](SIZE_T rva, SIZE_T width) {
+		if (cookie_rva < _image_size && rva < cookie_rva + width && cookie_rva < rva + width)
+			return false;
+		return !_options->Reexecution || std::any_of(import_ranges.begin(), import_ranges.end(),
+			[&](const std::pair<SIZE_T, SIZE_T>& range) {
+				return rva >= range.first && range_fits(range.second, rva - range.first, width);
+			});
+	};
 	if( this->_parsed_sections )
 	{
 		if( this->_parsed_pe_32 )
@@ -1588,7 +1739,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 					memcpy(&cand, _image + offset, sizeof(cand));
 
 					const export_entry* entry = cand_last != cand ? exports->lookup(cand) : NULL;
-					if (entry != NULL)
+					if (entry != NULL && allow_import(offset, sizeof(DWORD)))
 					{
 						// Add this to be reconstructed as an import
 						peimp->add_fixup(*entry, offset, this->_parsed_pe_64);
@@ -1596,7 +1747,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 							return _reject_size();
 						count++;
 					}
-					else
+					else if (entry == NULL)
 					{
 						cand_last = cand;
 					}
@@ -1621,6 +1772,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				larger_image = larger_image_storage.get();
 				memset(larger_image + _image_size, 0, larger_image_size - _image_size);
 				memcpy(larger_image, _image, _image_size);
+				restore_zero_fill(larger_image);
 
 				if( _options->Verbose )
 					printf( "INFO: Writing added import table.\n" );
@@ -1643,6 +1795,13 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 			{
 				larger_image_size = _image_size;
 				larger_image = _image;
+				if (!zero_fill.empty())
+				{
+					larger_image_storage.reset(new unsigned char[_image_size]);
+					larger_image = larger_image_storage.get();
+					memcpy(larger_image, _image, _image_size);
+					restore_zero_fill(larger_image);
+				}
 			}
 			
 			if( _original_base != 0 )
@@ -1651,7 +1810,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				_header_pe32->OptionalHeader.ImageBase = (DWORD) _original_base;
 			}
 
-			return _pack_disk_image(larger_image, static_cast<SIZE_T>(larger_image_size));
+			return _pack_disk_image(larger_image, static_cast<SIZE_T>(larger_image_size), cookie_rva);
 		}
 		else if( this->_parsed_pe_64 )
 		{
@@ -1729,7 +1888,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 					memcpy(&cand, _image + offset, sizeof(cand));
 
 					const export_entry* entry = cand_last != cand ? exports->lookup(cand) : NULL;
-					if (entry != NULL)
+					if (entry != NULL && allow_import(offset, sizeof(ULONGLONG)))
 					{
 						// Add this to be reconstructed as an import
 						peimp->add_fixup(*entry, offset, this->_parsed_pe_64);
@@ -1737,7 +1896,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 							return _reject_size();
 						count++;
 					}
-					else
+					else if (entry == NULL)
 					{
 						cand_last = cand;
 					}
@@ -1762,6 +1921,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				larger_image = larger_image_storage.get();
 				memset(larger_image + _image_size, 0, larger_image_size - _image_size);
 				memcpy(larger_image, _image, _image_size);
+				restore_zero_fill(larger_image);
 
 				if( _options->Verbose )
 					printf( "INFO: Writing added import table.\n" );
@@ -1784,6 +1944,13 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 			{
 				larger_image_size = _image_size;
 				larger_image = _image;
+				if (!zero_fill.empty())
+				{
+					larger_image_storage.reset(new unsigned char[_image_size]);
+					larger_image = larger_image_storage.get();
+					memcpy(larger_image, _image, _image_size);
+					restore_zero_fill(larger_image);
+				}
 			}
 			
 				
@@ -1794,7 +1961,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				_header_pe64->OptionalHeader.ImageBase = reinterpret_cast<__int64> (_original_base);
 			}
 
-			return _pack_disk_image(larger_image, static_cast<SIZE_T>(larger_image_size));
+			return _pack_disk_image(larger_image, static_cast<SIZE_T>(larger_image_size), cookie_rva);
 		}
 	}
 	return false;

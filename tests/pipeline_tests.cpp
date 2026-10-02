@@ -253,7 +253,7 @@ namespace
 		PD_OPTIONS options;
 		require(options.ImportRec && !options.ForceGenHeader && !options.Verbose && !options.ReconstructHeaderAsDll &&
 			options.DumpChunks && options.EntryPointHash && !options.ForceReconstructEntryPoint &&
-			options.NumberOfThreads == 16 && options.EntryPointOverride == -1 && options.output_path[0] == 0,
+			!options.Reexecution && options.NumberOfThreads == 16 && options.EntryPointOverride == -1 && options.output_path[0] == 0,
 			"default dump/database options are not initialized consistently");
 	}
 

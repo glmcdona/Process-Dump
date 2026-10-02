@@ -134,6 +134,10 @@ int main(int argc, char** argv)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	if (argc > 1 && strcmp(argv[1], "--benchmark") == 0)
 		return run_performance_benchmark(argc - 2, argv + 2);
+	if (argc > 1 && strcmp(argv[1], "--reexecute") == 0)
+		return run_reexecution_probe(argc - 2, argv + 2);
+	if (argc == 2 && strcmp(argv[1], "--reexecution-fixture") == 0)
+		return run_reexecution_fixture();
 	std::vector<test_case> tests = {
 		{"crc-vectors", crc_vectors}, {"file-stream", file_stream_roundtrip},
 		{"process-stream", process_stream_roundtrip},
@@ -158,6 +162,7 @@ int main(int argc, char** argv)
 		append_reconstruction_tests(tests);
 		append_pipeline_tests(tests);
 		append_performance_tests(tests);
+		append_reexecution_tests(tests);
 	}
 	int failures = 0, count = 0;
 	for (const auto& test : tests)

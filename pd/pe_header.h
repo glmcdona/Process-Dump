@@ -104,7 +104,10 @@ class pe_header
 	void _clear_header();
 	bool _reject_size();
 	bool _append_import_section(DWORD rva, DWORD size);
-	bool _pack_disk_image(const unsigned char* image, SIZE_T size);
+	bool _pack_disk_image(const unsigned char* image, SIZE_T size, SIZE_T cookie_rva);
+	bool _writable_data_range(SIZE_T rva, SIZE_T width) const;
+	bool _reexecution_import_ranges(std::vector<std::pair<SIZE_T, SIZE_T>>& ranges) const;
+	bool _reexecution_cookie_rva(SIZE_T& rva) const;
 	
 	unsigned __int64 _hash_asm(SIZE_T offset);
 	unsigned __int64 _hash_short_asm(SIZE_T offset);

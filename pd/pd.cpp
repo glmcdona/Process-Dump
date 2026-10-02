@@ -445,6 +445,8 @@ int _tmain(int argc, _TCHAR* argv[])
 			flagRecursion = false;
 		else if( lstrcmp(argv[i],L"-ni") == 0 )
 			options.ImportRec = false;
+		else if (lstrcmp(argv[i], L"-reexec") == 0)
+			options.Reexecution = true;
 		else if( lstrcmp(argv[i],L"-nc") == 0 )
 			options.DumpChunks = false;
 		else if (lstrcmp(argv[i], L"-nep") == 0)
@@ -831,6 +833,7 @@ int _tmain(int argc, _TCHAR* argv[])
 		printf("\t-nh\t\tNo header is printed in the output.\n\n");
 		printf("\t-nr\t\tDisable recursion on hash database directory add or\n\t\t\tremove commands.\n\n");
 		printf("\t-ni\t\tDisable import reconstruction.\n\n");
+		printf("\t-reexec\t\tExperimental re-execution preparation: reset the GS cookie and writable,\n\t\t\tnon-executable zero-fill data; limit new imports to file-backed writable\n\t\t\tdata outside delay-IAT sections. Discards captured state; assumes original\n\t\t\tsection layout. Does not execute dumps or restore a process checkpoint.\n\n");
 		printf("\t-nc\t\tDisable dumping of loose code regions.\n\n");
 		printf("\t-nt\t\tDisable multithreading.\n\n");
 		printf("\t-nep\t\tDisable entry point hashing.\n\n");
@@ -1083,4 +1086,3 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	return 0;
 }
-

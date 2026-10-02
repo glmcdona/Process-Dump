@@ -23,13 +23,14 @@ public:
 	bool DumpChunks; // Dump loose code chunks
 	bool EntryPointHash;
 	bool ForceReconstructEntryPoint;
+	bool Reexecution;
 	int NumberOfThreads;
 
 	__int64 EntryPointOverride;
 	char* output_path;
 
 	PD_OPTIONS() : ImportRec(true), ForceGenHeader(false), Verbose(false), ReconstructHeaderAsDll(false),
-		DumpChunks(true), EntryPointHash(true), ForceReconstructEntryPoint(false), NumberOfThreads(16),
+		DumpChunks(true), EntryPointHash(true), ForceReconstructEntryPoint(false), Reexecution(false), NumberOfThreads(16),
 		EntryPointOverride(-1)
 	{
 		output_path = new char[1];

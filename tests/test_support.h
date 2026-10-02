@@ -16,7 +16,10 @@ void append_output_tests(std::vector<test_case>& tests);
 void append_reconstruction_tests(std::vector<test_case>& tests);
 void append_pipeline_tests(std::vector<test_case>& tests);
 void append_performance_tests(std::vector<test_case>& tests);
+void append_reexecution_tests(std::vector<test_case>& tests);
 int run_performance_benchmark(int argc, char** argv);
+int run_reexecution_probe(int argc, char** argv);
+int run_reexecution_fixture();
 
 inline void require(bool condition, const char* message)
 {
