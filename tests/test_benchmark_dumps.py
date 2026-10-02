@@ -5,9 +5,11 @@ from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
+import json
 
 from benchmark_dumps import benchmark_running, compare_code, compare_reports, file_metrics, pe_info
 from pe_quality import compare_quality, PE
+from benchmark_performance import METRICS, compare as compare_performance, read_result, summarize
 
 
 def fixture():
@@ -26,6 +28,33 @@ def fixture():
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_performance_parser(self):
+        row = dict(workload="imports", threads=4, jobs=8, profiled_allocations=True,
+                   output_bytes=83, normalized_crc32="12345678", **{metric: 10 for metric in METRICS})
+        text = "ordinary diagnostics\nPERF " + json.dumps(row)
+        self.assertEqual(read_result(text, "imports", 4, 8), row)
+        for output in ("", text + "\nPERF " + json.dumps(row)):
+            with self.assertRaises(ValueError):
+                read_result(output, "imports", 4, 8)
+        with self.assertRaises(ValueError):
+            read_result(text, "imports", 1, 8)
+
+    def test_performance_comparison(self):
+        row = dict(workload="imports", threads=4, jobs=8, profiled_allocations=True,
+                   output_bytes=83, normalized_crc32="12345678", **{metric: 10 for metric in METRICS})
+        before = summarize([row, dict(row, wall_ms=50), dict(row, wall_ms=20)])
+        after = summarize([row])
+        self.assertEqual(compare_performance(before, after)["wall_ms_ratio"], 0.5)
+        self.assertTrue(compare_performance(before, after)["equivalent_output"])
+        for field, value in (("normalized_crc32", "87654321"), ("output_bytes", 84),
+                             ("profiled_allocations", False), ("jobs", 9), ("threads", 1)):
+            with self.assertRaises(ValueError):
+                compare_performance(before, dict(after, **{field: value}))
+            with self.assertRaises(ValueError):
+                summarize([row, dict(row, **{field: value})])
+        queries = dict(row, output_bytes=0, normalized_crc32="00000000")
+        self.assertIsNone(compare_performance(queries, queries)["equivalent_output"])
+
     def test_quality_byte_comparison(self):
         source = fixture()
         dump = bytearray(source)

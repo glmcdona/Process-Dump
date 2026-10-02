@@ -219,8 +219,15 @@ pe_header::pe_header( HANDLE ph, void* base, module_list* modules, PD_OPTIONS* o
 	this->_disk_image_size = 0;
 	this->_unique_hash = 0;
 
-	this->_stream = (stream_wrapper*) new process_stream( ph, base );
+	this->_stream = (stream_wrapper*) new process_stream( ph, base, modules );
 	_original_base = base;
+	if (modules != NULL)
+	{
+		_name_filepath_long = new char[FILEPATH_SIZE];
+		_name_filepath_long_size = _stream->get_long_name(_name_filepath_long, FILEPATH_SIZE);
+		_name_filepath_short = new char[FILEPATH_SIZE];
+		_name_filepath_short_size = _stream->get_short_name(_name_filepath_short, FILEPATH_SIZE);
+	}
 
 	if( _options->Verbose )
 		fprintf( stdout, "INFO: Initialized header for module name %s.\n", this->get_name() );
@@ -633,9 +640,9 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 
 			if (cand32 != cand32_last)
 			{
-				if (exports->contains(cand32))
+				if (const export_entry* found = exports->lookup(cand32))
 				{
-					export_entry entry = exports->find(cand32);
+					const export_entry& entry = *found;
 
 					// Found an import reference
 					unordered_set<unsigned __int64>::const_iterator gotImportAddress = import_addresses.find(cand32);
@@ -677,9 +684,9 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 			unsigned __int64 cand64 = *((unsigned __int64*)(_image + offset));
 			if (cand64 != cand64_last && cand64 > 0xffffffff)
 			{
-				if (exports->contains(cand64))
+				if (const export_entry* found = exports->lookup(cand64))
 				{
-					export_entry entry = exports->find(cand64);
+					const export_entry& entry = *found;
 
 					// Found an import reference
 					unordered_set<unsigned __int64>::const_iterator gotImportAddress = import_addresses.find(cand64);
@@ -1378,7 +1385,7 @@ bool pe_header::_append_import_section(DWORD rva, DWORD size)
 	return true;
 }
 
-bool pe_header::_pack_disk_image(unsigned char* image, SIZE_T size)
+bool pe_header::_pack_disk_image(const unsigned char* image, SIZE_T size)
 {
 	const DWORD alignment = _parsed_pe_32 ? _header_pe32->OptionalHeader.SectionAlignment : _header_pe64->OptionalHeader.SectionAlignment;
 	DWORD& headers_size = _parsed_pe_32 ? _header_pe32->OptionalHeader.SizeOfHeaders : _header_pe64->OptionalHeader.SizeOfHeaders;
@@ -1405,6 +1412,14 @@ bool pe_header::_pack_disk_image(unsigned char* image, SIZE_T size)
 			(span != 0 && section.VirtualAddress < headers_size))
 			return _reject_size();
 		SIZE_T initialized = span;
+		while (initialized >= sizeof(SIZE_T))
+		{
+			SIZE_T word;
+			memcpy(&word, image + section.VirtualAddress + initialized - sizeof(word), sizeof(word));
+			if (word != 0)
+				break;
+			initialized -= sizeof(word);
+		}
 		while (initialized != 0 && image[section.VirtualAddress + initialized - 1] == 0)
 			--initialized;
 		for (int directory = 0; directory < IMAGE_NUMBEROF_DIRECTORY_ENTRIES; ++directory)
@@ -1509,14 +1524,15 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 
 				// The entry-point looks invalid, search for candidates to reconstruct it
 				unsigned __int64 best_entrypoint = 0;
+				const auto entrypoints = hash_database->snapshot_entrypoints();
 
-				for (__int64 offset = 0x1000; _image_size >= 8 && offset < _image_size - 8; offset += 1)
+				for (__int64 offset = 0x1000; !entrypoints->short_hashes.empty() && _image_size >= 8 && offset < _image_size - 8; offset += 1)
 				{
 					// Check if this is a possible entrypoint
 					unsigned __int64 cand = *((__int64*)(_image + offset));
 
 					// Lookup the address
-					if (hash_database->contains_epshort(cand))
+					if (cand >= entrypoints->minimum && cand <= entrypoints->maximum && entrypoints->short_hashes.count(cand) != 0)
 					{
 						// This is a possible entrypoint, this is a weak correlation but we'll use it if it's all we have
 						if (best_entrypoint == 0)
@@ -1528,7 +1544,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 
 						// Validate that the full hash matches a known entrypoint
 						cand = _hash_asm(offset);
-						if (hash_database->contains_ep(cand))
+						if (entrypoints->full.count(cand) != 0)
 						{
 							best_entrypoint = offset;
 							printf("INFO: Possible entrypoint found (strong): %x\n", offset);
@@ -1571,15 +1587,11 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 					unsigned __int32 cand = 0;
 					memcpy(&cand, _image + offset, sizeof(cand));
 
-					if ( cand_last != cand && exports->contains( cand ) )
+					const export_entry* entry = cand_last != cand ? exports->lookup(cand) : NULL;
+					if (entry != NULL)
 					{
-						export_entry entry = exports->find(cand);
-
 						// Add this to be reconstructed as an import
-						if (entry.name != NULL)
-							peimp->add_fixup(entry.library_name, entry.name, offset, this->_parsed_pe_64);
-						else
-							peimp->add_fixup(entry.library_name, entry.ord, offset, this->_parsed_pe_64);
+						peimp->add_fixup(*entry, offset, this->_parsed_pe_64);
 						if (!peimp->valid())
 							return _reject_size();
 						count++;
@@ -1607,7 +1619,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 					return _reject_size();
 				larger_image_storage.reset(new unsigned char[static_cast<SIZE_T>(larger_image_size)]);
 				larger_image = larger_image_storage.get();
-				memset(larger_image, 0, larger_image_size);
+				memset(larger_image + _image_size, 0, larger_image_size - _image_size);
 				memcpy(larger_image, _image, _image_size);
 
 				if( _options->Verbose )
@@ -1630,10 +1642,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 			else
 			{
 				larger_image_size = _image_size;
-				larger_image_storage.reset(new unsigned char[static_cast<SIZE_T>(larger_image_size)]);
-				larger_image = larger_image_storage.get();
-				memset(larger_image, 0, larger_image_size);
-				memcpy(larger_image, _image, _image_size);
+				larger_image = _image;
 			}
 			
 			if( _original_base != 0 )
@@ -1656,14 +1665,15 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 
 				// The entry-point looks invalid, search for candidates to reconstruct it
 				unsigned __int64 best_entrypoint = 0;
+				const auto entrypoints = hash_database->snapshot_entrypoints();
 
-				for (__int64 offset = 0x1000; _image_size >= 8 && offset < _image_size - 8; offset += 1)
+				for (__int64 offset = 0x1000; !entrypoints->short_hashes.empty() && _image_size >= 8 && offset < _image_size - 8; offset += 1)
 				{
 					// Check if this is a possible entrypoint
 					unsigned __int64 cand = *((__int64*)(_image + offset));
 
 					// Lookup the address
-					if (hash_database->contains_epshort(cand))
+					if (cand >= entrypoints->minimum && cand <= entrypoints->maximum && entrypoints->short_hashes.count(cand) != 0)
 					{
 						// This is a possible entrypoint, this is a weak correlation but we'll use it if it's all we have
 						if (best_entrypoint == 0)
@@ -1675,7 +1685,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 
 						// Validate that the full hash matches a known entrypoint
 						cand = _hash_asm(offset);
-						if (hash_database->contains_ep(cand))
+						if (entrypoints->full.count(cand) != 0)
 						{
 							best_entrypoint = offset;
 							printf("INFO: Possible entrypoint found (strong): %x\n", offset);
@@ -1718,15 +1728,11 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 					unsigned __int64 cand = 0;
 					memcpy(&cand, _image + offset, sizeof(cand));
 
-					if (cand_last != cand && exports->contains(cand))
+					const export_entry* entry = cand_last != cand ? exports->lookup(cand) : NULL;
+					if (entry != NULL)
 					{
-						export_entry entry = exports->find(cand);
-
 						// Add this to be reconstructed as an import
-						if (entry.name != NULL)
-							peimp->add_fixup(entry.library_name, entry.name, offset, this->_parsed_pe_64);
-						else
-							peimp->add_fixup(entry.library_name, entry.ord, offset, this->_parsed_pe_64);
+						peimp->add_fixup(*entry, offset, this->_parsed_pe_64);
 						if (!peimp->valid())
 							return _reject_size();
 						count++;
@@ -1754,7 +1760,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 					return _reject_size();
 				larger_image_storage.reset(new unsigned char[static_cast<SIZE_T>(larger_image_size)]);
 				larger_image = larger_image_storage.get();
-				memset(larger_image, 0, larger_image_size);
+				memset(larger_image + _image_size, 0, larger_image_size - _image_size);
 				memcpy(larger_image, _image, _image_size);
 
 				if( _options->Verbose )
@@ -1777,10 +1783,7 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 			else
 			{
 				larger_image_size = _image_size;
-				larger_image_storage.reset(new unsigned char[static_cast<SIZE_T>(larger_image_size)]);
-				larger_image = larger_image_storage.get();
-				memset(larger_image, 0, larger_image_size);
-				memcpy(larger_image, _image, _image_size);
+				larger_image = _image;
 			}
 			
 				

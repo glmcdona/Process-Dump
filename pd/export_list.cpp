@@ -62,41 +62,25 @@ export_list::export_list()
 
 bool export_list::contains(unsigned __int64 address)
 {
-	// Look up a 64-bit value
-	if ( address <= UINT_MAX )
-		return contains((unsigned __int32)address);
-	
-	if (address > _max64 || address < _min64 || (address & ~_bits64) > 0)
-	{
-		// We know there is no match by this quick filtering. This improves performance hugely.
-		return false;
-	}
-
-	// Lookup the address
-	unordered_set<unsigned __int64>::const_iterator got = _addresses.find(address);
-	if (got != _addresses.end())
-	{
-		return true;
-	}
-	return false;
+	return lookup(address) != NULL;
 }
 
 bool export_list::contains(unsigned __int32 address)
 {
-	// Look up a 32-bit value
-	if (address > _max32 || address < _min32 || (address & ~_bits32) > 0)
-	{
-		// We know there is no match by this quick filtering. This improves performance hugely.
-		return false;
-	}
+	return lookup(address) != NULL;
+}
 
-	// Lookup the address
-	unordered_set<unsigned __int64>::const_iterator got = _addresses.find(address);
-	if (got != _addresses.end())
+const export_entry* export_list::lookup(unsigned __int64 address) const
+{
+	if (address <= UINT_MAX)
 	{
-		return true;
+		if (address > _max32 || address < _min32 || (address & ~_bits32) != 0)
+			return NULL;
 	}
-	return false;
+	else if (address > _max64 || address < _min64 || (address & ~_bits64) != 0)
+		return NULL;
+	const auto found = _address_to_exports.find(address);
+	return found == _address_to_exports.end() ? NULL : found->second;
 }
 
 unsigned __int64 export_list::find_export(char* library, char* name, bool is64)
@@ -137,34 +121,52 @@ void export_list::add_export(unsigned __int64 address, export_entry* entry)
 {
 	// Register this export address for quick lookups later
 	if (_address_to_exports.count(address) == 0)
+		_add_owned(address, std::unique_ptr<export_entry>(new export_entry(entry)));
+}
+
+void export_list::_add_owned(unsigned __int64 address, std::unique_ptr<export_entry> entry)
+{
+	if (_address_to_exports.emplace(address, entry.get()).second)
 	{
-		_address_to_exports.insert(std::pair<unsigned __int64, export_entry*>(address, new export_entry(entry)));
-
-		if (_addresses.count(address) == 0)
-		{
-			_addresses.insert(address);
-
-			// Update our quick-lookup values
-			if ( address > UINT_MAX )
-			{
-				// 64bit value
-				if (address > _max64)
-					_max64 = address;
-				if (address < _min64)
-					_min64 = address;
-				_bits64 = _bits64 | address;
-			}
-			else
-			{
-				// 32bit value
-				if (address > _max32)
-					_max32 = address;
-				if (address < _min32)
-					_min32 = address;
-				_bits32 = _bits32 | address;
-			}
-		}
+		entry.release();
+		_update_filters(address);
 	}
+}
+
+void export_list::_update_filters(unsigned __int64 address)
+{
+	if (address > UINT_MAX)
+	{
+		_max64 = (std::max)(_max64, address);
+		_min64 = (std::min)(_min64, address);
+		_bits64 |= address;
+	}
+	else
+	{
+		_max32 = (std::max)(_max32, static_cast<unsigned __int32>(address));
+		_min32 = (std::min)(_min32, static_cast<unsigned __int32>(address));
+		_bits32 |= static_cast<unsigned __int32>(address);
+	}
+}
+
+void export_list::take_exports(export_list& other)
+{
+	if (&other == this)
+		return;
+	for (auto entry = other._address_to_exports.begin(); entry != other._address_to_exports.end();)
+	{
+		if (_address_to_exports.emplace(entry->first, entry->second).second)
+			_update_filters(entry->first);
+		else
+			delete entry->second;
+		entry = other._address_to_exports.erase(entry);
+	}
+	other._min64 = _UI64_MAX;
+	other._max64 = UINT_MAX;
+	other._min32 = UINT_MAX;
+	other._max32 = 0;
+	other._bits32 = 0;
+	other._bits64 = 0;
 }
 
 bool export_list::add_exports(export_list* other)
@@ -240,8 +242,10 @@ bool export_list::add_exports(unsigned char* image, SIZE_T image_size, unsigned 
 		// Loaded export tables can redirect functions outside their own module (for example WOW64 USER32).
 		if (image_base > _UI64_MAX - rva || index > MAXWORD || directory.Base > MAXWORD - index)
 			return false;
-		export_entry entry(library_name.c_str(), name, static_cast<WORD>(directory.Base + index), rva, image_base + rva, is64);
-		parsed.add_export(entry.address, &entry);
+		const auto address = image_base + rva;
+		if (!parsed.contains(address))
+			parsed._add_owned(address, std::unique_ptr<export_entry>(new export_entry(library_name.c_str(),
+				name, static_cast<WORD>(directory.Base + index), rva, address, is64)));
 		return true;
 	};
 	for (DWORD i = 0; i < directory.NumberOfNames; ++i)
@@ -264,7 +268,8 @@ bool export_list::add_exports(unsigned char* image, SIZE_T image_size, unsigned 
 	for (DWORD i = 0; i < directory.NumberOfFunctions; ++i)
 		if (!add_function(i, NULL))
 			return false;
-	return add_exports(&parsed);
+	take_exports(parsed);
+	return true;
 }
 
 export_list::~export_list(void)

@@ -132,6 +132,8 @@ int main(int argc, char** argv)
 	_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
 #endif
 	setvbuf(stdout, NULL, _IONBF, 0);
+	if (argc > 1 && strcmp(argv[1], "--benchmark") == 0)
+		return run_performance_benchmark(argc - 2, argv + 2);
 	std::vector<test_case> tests = {
 		{"crc-vectors", crc_vectors}, {"file-stream", file_stream_roundtrip},
 		{"process-stream", process_stream_roundtrip},
@@ -155,6 +157,7 @@ int main(int argc, char** argv)
 		append_output_tests(tests);
 		append_reconstruction_tests(tests);
 		append_pipeline_tests(tests);
+		append_performance_tests(tests);
 	}
 	int failures = 0, count = 0;
 	for (const auto& test : tests)

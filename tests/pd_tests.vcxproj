@@ -27,6 +27,7 @@
     <ClCompile>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\pd;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_CONSOLE;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(ProfileAllocations)' == 'true'">PD_PROFILE_ALLOCATIONS;WIN32;_CONSOLE;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
@@ -51,4 +52,7 @@
     <ClCompile Include="..\pd\*.cpp" Exclude="..\pd\pd.cpp;..\pd\stdafx.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="ValidateAllocationProfiling" BeforeTargets="ClCompile" Condition="'$(ProfileAllocations)' == 'true' and '$(EnableASAN)' == 'true'">
+    <Error Text="Use separate builds for ProfileAllocations and EnableASAN; do not replace the sanitizer's allocation operators." />
+  </Target>
 </Project>

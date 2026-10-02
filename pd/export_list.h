@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
+#include <memory>
 #include "utils.h"
 #include "limits.h"
 
@@ -39,7 +40,8 @@ class export_list
 	unsigned __int64 _bits64;
 
 	unordered_map<unsigned __int64, export_entry*> _address_to_exports; // List of export addresses in this export list
-	unordered_set<unsigned __int64> _addresses; // List of export addresses
+	void _update_filters(unsigned __int64 address);
+	void _add_owned(unsigned __int64 address, std::unique_ptr<export_entry> entry);
 public:
 	
 
@@ -47,6 +49,7 @@ public:
 	
 	bool add_exports(unsigned char* image, SIZE_T image_size, unsigned __int64 image_base, IMAGE_EXPORT_DIRECTORY* header_export_directory, bool is64, DWORD directory_size = 0);
 	bool add_exports(export_list* other);
+	void take_exports(export_list& other);
 	void add_export(unsigned __int64 address, export_entry* entry);
 
 	// Find export addresses in a process
@@ -56,6 +59,7 @@ public:
 	bool contains(unsigned __int64 address);
 	bool contains(unsigned __int32 address);
 	export_entry find(unsigned __int64 address);
+	const export_entry* lookup(unsigned __int64 address) const;
 	unsigned __int64 get_min64() { return _min64; };
 	unsigned __int64 get_max64() { return _max64; };
 	unsigned __int32 get_min32() { return _min32; };

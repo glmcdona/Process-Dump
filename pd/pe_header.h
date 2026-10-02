@@ -104,7 +104,7 @@ class pe_header
 	void _clear_header();
 	bool _reject_size();
 	bool _append_import_section(DWORD rva, DWORD size);
-	bool _pack_disk_image(unsigned char* image, SIZE_T size);
+	bool _pack_disk_image(const unsigned char* image, SIZE_T size);
 	
 	unsigned __int64 _hash_asm(SIZE_T offset);
 	unsigned __int64 _hash_short_asm(SIZE_T offset);

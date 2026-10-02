@@ -229,7 +229,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 									fprintf( stdout, "INFO: Found MZ header at %llX.\n", base );
 
 								// Bingo, possible MZ file
-								pe_header* header = new pe_header( _pid, (void*) base, modules, _options );
+								pe_header* header = new pe_header( _ph, (void*) base, modules, _options );
 
 								header->process_pe_header();
 								header->process_sections();
@@ -338,7 +338,7 @@ int dump_process::get_all_hashes(unordered_set<unsigned __int64>* output_hashes,
 						output_hashes->insert( chunk_header_hash );
 
 						// Calculate the generic import reference hash as well
-						pe_header* header = new pe_header( _pid, (void*) *it, modules, _options );
+						pe_header* header = new pe_header( _ph, (void*) *it, modules, _options );
 						header->build_pe_header( 0x1000, true, 1 ); // 64bit, only build it with the 1 executable section for performance reasons
 						header->process_sections();
 
@@ -408,11 +408,11 @@ bool dump_process::build_export_list()
 			// Loop through each of these modules, grabbing their exports
 			for (unordered_map<unsigned __int64, module*>::const_iterator item = modules->_modules.begin(); item != modules->_modules.end(); ++item)
 			{
-				pe_header* header = new pe_header(_pid, (void*) item->first, modules, _options);
+				pe_header* header = new pe_header(_ph, (void*) item->first, modules, _options);
 				if (header->process_pe_header() && header->process_sections() && header->process_export_directory())
 				{
 					// Load it's exports
-					this->_export_list.add_exports(header->get_exports());
+					this->_export_list.take_exports(*header->get_exports());
 				}
 
 				// Cleanup
@@ -438,11 +438,11 @@ bool dump_process::build_export_list(export_list* result, char* library, module_
 		{
 			if (strcmpi(item->second->short_name, library) == 0)
 			{
-				pe_header* header = new pe_header(_pid, (void*)item->first, modules, _options);
+				pe_header* header = new pe_header(_ph, (void*)item->first, modules, _options);
 				if (header->process_pe_header() && header->process_sections() && header->process_export_directory())
 				{
 					// Load its exports
-					result->add_exports(header->get_exports());
+					result->take_exports(*header->get_exports());
 				}
 
 				// Cleanup
@@ -534,7 +534,7 @@ void dump_process::dump_region(__int64 base)
 		if( !_options->ImportRec || build_export_list() )
 		{
 			module_list* modules = new module_list( _pid );
-			pe_header* header = new pe_header( _pid, (void*) base, modules, _options );
+			pe_header* header = new pe_header( _ph, (void*) base, modules, _options );
 			
 			if( _options->ForceGenHeader || !header->process_pe_header() )
 			{
@@ -548,7 +548,7 @@ void dump_process::dump_region(__int64 base)
 
 				if( _options->Verbose )
 					printf( "Generating 32-bit PE header for module at %llX.\n", base );
-				header = new pe_header( _pid, (void*) base, modules, _options );
+				header = new pe_header( _ph, (void*) base, modules, _options );
 				if (header->build_pe_header(0x1000, false))
 					dump_header(header, base, _pid);
 			}
@@ -652,7 +652,7 @@ void dump_process::dump_all()
 	if( _ph != NULL )
 	{
 		// First build the export list for this process
-		if( build_export_list() )
+		if ((!_options->ImportRec && !_options->DumpChunks) || build_export_list())
 		{
 			// First build a list of the modules
 			module_list* modules = new module_list( _pid );
@@ -709,7 +709,7 @@ void dump_process::dump_all()
 							if (output[0] == 'M' && output[1] == 'Z')
 							{
 								// Bingo, possible MZ file
-								pe_header* header = new pe_header(_pid, (void*)base, modules, _options);
+								pe_header* header = new pe_header(_ph, (void*)base, modules, _options);
 
 								// Use the existing PE header for the dumping
 								if (header->process_pe_header())
@@ -739,12 +739,12 @@ void dump_process::dump_all()
 											{
 												// Use the existing PE header only to get the hash, then generate a PE header for the dumping.
 												fprintf(stdout, "Dumping a module but ignoring existing PE Header for module at 0x%llX.\n", base);
-												pe_header* header_dump = new pe_header(_pid, (void*)base, modules, _options);
+												pe_header* header_dump = new pe_header(_ph, (void*)base, modules, _options);
 												header_dump->build_pe_header(0x1000, true); // 64bit
 												dump_header(header_dump, base, _pid);
 												delete header_dump;
 
-												header_dump = new pe_header(_pid, (void*)base, modules, _options);
+												header_dump = new pe_header(_ph, (void*)base, modules, _options);
 												header_dump->build_pe_header(0x1000, false); // 32bit
 												dump_header(header_dump, base, _pid);
 												delete header_dump;
@@ -805,7 +805,7 @@ void dump_process::dump_all()
 						}
 						
 						// Calculate the generic import reference hash as well
-						pe_header* header = new pe_header( _pid, (void*) *it, modules, _options );
+						pe_header* header = new pe_header( _ph, (void*) *it, modules, _options );
 						header->build_pe_header( 0x1000, true, 1 ); // 64bit, only build it with the 1 executable section for performance reasons
 						header->process_sections();
 
@@ -821,13 +821,13 @@ void dump_process::dump_all()
 							if( header->somewhat_parsed() && import_summary.COUNT_UNIQUE_IMPORT_ADDRESSES >= 2 ) // Require at least 5 imports for dumping
 							{
 								fprintf( stdout, "Dumping unattached executable code chunk from 0x%llX.\n", *it );
-								pe_header* header_dump = new pe_header( _pid, (void*) *it, modules, _options );
+								pe_header* header_dump = new pe_header( _ph, (void*) *it, modules, _options );
 								header_dump->build_pe_header( 0x1000, true ); // 64bit
 								header_dump->set_name("codechunk");
 								dump_header(header_dump, *it, _pid);
 								delete header_dump;
 								
-								header_dump = new pe_header( _pid, (void*) *it, modules, _options );
+								header_dump = new pe_header( _ph, (void*) *it, modules, _options );
 								header_dump->build_pe_header( 0x1000, false ); // 32bit
 								header_dump->set_name("codechunk");
 								dump_header(header_dump, *it, _pid);

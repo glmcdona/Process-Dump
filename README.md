@@ -66,6 +66,24 @@ Address-specific dumping of a region without a PE header (or with `-g`) generate
 
 Native regression cases enforce a maximum 12 KiB dump (16 KiB with imports) for a fixture containing a 4 MiB mostly-zero virtual data section. They also cover valid sections beyond the former 60,000 KiB truncation threshold, sparse RVAs, unaligned image ends, high-address/terminal imports, occupied section-header space, and byte-preserving reloads of 32 varied PE32/PE64 layouts.
 
+## Controlled performance benchmarks
+
+`pd_tests.exe --benchmark imports 4 8` runs eight reconstruction jobs on four workers. The opt-in workloads are `dense` (4 MiB), `sparse` (32 MiB with a 4 KiB initialized prefix), `imports` (65,536 independent fixups), `entrypoint` (a nonmatching entrypoint database), `entrypoint-empty`, `database` (known-hit/miss queries), and `exports` (discovery in the test process itself). Fixtures are never executed. No other process is inspected or modified.
+
+Save a reference Release test executable **with the same benchmark harness**, then alternate reference/candidate trials:
+
+```powershell
+python .\tests\benchmark_performance.py --baseline C:\bench\before\pd_tests.exe --exe .\x64\Release\pd_tests.exe --report C:\bench\performance.json --threads 1 2 4 8 --jobs 16 --repeats 5
+```
+
+Reports retain individual samples, median phase timings, ratios, executable hashes, worker CPU cycles, coarse thread CPU times, and process peak working set. `capture_ms`, `reconstruct_ms`, `write_ms`, `cleanup_ms`, and `service_ms` sum work across jobs; they are **not** parallel elapsed time. `worker_ms` ends when the last worker finishes processing; `wall_ms` also includes thread teardown/join. Fixture setup, output-name reservation, thread creation, output readback/CRC, and file deletion are outside these intervals. A warmup precedes every trial. Peak working set includes warmup but is sampled before final readback. Timing still reflects filesystem caching, security scanning, CPU scheduling/frequency, and memory-bandwidth contention; worker throughput and maximum thread count are not universal speedup guarantees.
+
+Every serialized job is checked after timing against the warmup's output size and CRC32, normalizing only the fixture's ASLR-dependent PE64 image base. The runner rejects changed fingerprints or mismatched configurations across trials/builds. Database queries verify their expected hit count; export discovery has no serialized output, so neither reports output-fingerprint equivalence. Use the native semantic tests and the separate live-content benchmark for those paths. Temporary fixture outputs are removed on normal/error unwinding; forcibly killing the benchmark can leave files behind.
+
+For allocation attribution, build `tests\pd_tests.vcxproj` with `/p:ProfileAllocations=true` and separate `OutDir`/`IntDir` directories. This replaces C++ `new`/`delete` in the **test executable only**, counting thread-local calls/requested bytes during each job, not every CRT/Windows allocation. Compare instrumented builds only to other instrumented builds, and confirm timings separately with ordinary Release builds. Allocation instrumentation cannot be combined with AddressSanitizer. Reports are local-only, never overwritten, and not uploaded automatically.
+
+The optimized pipeline keeps captured bytes read-only during packing, scans zero tails a machine word at a time, and avoids a whole-image copy when imports are disabled. Import records are contiguous; reconstruction borrows names from its immutable export list instead of allocating copies for each fixup. Standalone string-based import APIs still own their strings. Export-list transfers retain first-wins alias precedence and stable record addresses. Process capture reuses the dumper's handle while preserving module names and ownership. When entrypoint recovery is needed, each image acquires a consistent immutable snapshot of both entrypoint sets, skips empty databases, and scans without contending on the shared database lock. Workers share the cached snapshot until entrypoint data changes, rather than copying a potentially large database per image. Updates become visible to the next snapshot; ordinary clean-hash lookups remain synchronized. Repeated per-location imports and PE/import serialization semantics are unchanged.
+
 ## Handling untrusted input
 
 PE headers, sections, imports, and exports are treated as untrusted data. Invalid ranges and reconstruction sizes above 256 MiB per image are rejected with a diagnostic instead of attempting unsafe allocations. This limit also applies to generated headers and reconstructed disk images.

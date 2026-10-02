@@ -30,12 +30,12 @@ namespace
 	}
 }
 
-void pe_imports::_add(std::unique_ptr<import_library> library)
+void pe_imports::_add(import_library library)
 {
 	__int64 descriptor_size = 0, extra_size = 0;
-	library->get_table_size(descriptor_size, extra_size);
-	const SIZE_T overhead = sizeof(import_library) + 2 * sizeof(import_library*);
-	if (!_valid || !library->valid() || !bounded_size(descriptor_size) || !bounded_size(extra_size) ||
+	library.get_table_size(descriptor_size, extra_size);
+	const SIZE_T overhead = 2 * sizeof(import_library);
+	if (!_valid || !library.valid() || !bounded_size(descriptor_size) || !bounded_size(extra_size) ||
 		!table_range(MAX_PE_IMAGE_SIZE, descriptor_size, extra_size) ||
 		!table_range(MAX_PE_IMAGE_SIZE, descriptor_size + extra_size, overhead) ||
 		!table_range(MAX_PE_IMAGE_SIZE, _owned_size, descriptor_size + extra_size + overhead))
@@ -44,19 +44,27 @@ void pe_imports::_add(std::unique_ptr<import_library> library)
 		return;
 	}
 	_owned_size += static_cast<SIZE_T>(descriptor_size + extra_size) + overhead;
+	if (_libraries.size() == _libraries.capacity())
+		_libraries.reserve(_libraries.empty() ? 1 : 2 * _libraries.size());
 	_libraries.push_back(std::move(library));
 }
 
 void pe_imports::add_fixup(char* library_name, int ordinal, __int64 rva, bool win64)
 {
 	if (_valid)
-		_add(std::unique_ptr<import_library>(new import_library(library_name, ordinal, rva, win64)));
+		_add(import_library(library_name, ordinal, rva, win64));
 }
 
 void pe_imports::add_fixup(char* library_name, char* proc_name, __int64 rva, bool win64)
 {
 	if (_valid)
-		_add(std::unique_ptr<import_library>(new import_library(library_name, proc_name, rva, win64)));
+		_add(import_library(library_name, proc_name, rva, win64));
+}
+
+void pe_imports::add_fixup(const export_entry& entry, __int64 rva, bool win64)
+{
+	if (_valid)
+		_add(import_library(entry, rva, win64));
 }
 
 void pe_imports::get_table_size(__int64& descriptor_size, __int64& extra_size)
@@ -66,8 +74,8 @@ void pe_imports::get_table_size(__int64& descriptor_size, __int64& extra_size)
 		descriptor_size = extra_size = -1;
 		return;
 	}
-	for (const auto& library : _libraries)
-		library->get_table_size(descriptor_size, extra_size);
+	for (auto& library : _libraries)
+		library.get_table_size(descriptor_size, extra_size);
 	add_size(descriptor_size, sizeof(IMAGE_IMPORT_DESCRIPTOR));
 }
 
@@ -83,9 +91,9 @@ bool pe_imports::build_table(unsigned char* section, __int64 section_size, __int
 		!table_rva(section_rva, 0, section_size))
 		return false;
 
-	for (const auto& library : _libraries)
+	for (auto& library : _libraries)
 	{
-		if (!library->build_table(section, section_size, section_rva, descriptor_offset, extra_offset))
+		if (!library.build_table(section, section_size, section_rva, descriptor_offset, extra_offset))
 			return false;
 	}
 	memset(section + static_cast<SIZE_T>(descriptor_offset), 0, sizeof(IMAGE_IMPORT_DESCRIPTOR));
@@ -126,60 +134,76 @@ pe_imports::pe_imports(unsigned char* image, __int64 image_size, IMAGE_IMPORT_DE
 void pe_imports::add_descriptor(IMAGE_IMPORT_DESCRIPTOR* descriptor)
 {
 	if (_valid)
-		_add(std::unique_ptr<import_library>(new import_library(descriptor, _win64)));
+		_add(import_library(descriptor, _win64));
 }
 
 pe_imports::~pe_imports(void) = default;
 
-import_library::~import_library(void)
-{
-	delete _descriptor;
-	delete[] reinterpret_cast<char*>(_import_by_name);
-	delete[] _library_name;
-	delete _thunk_entry;
-}
-
 import_library::import_library(IMAGE_IMPORT_DESCRIPTOR* descriptor, bool win64)
 {
 	if (descriptor != NULL)
-		_descriptor = new IMAGE_IMPORT_DESCRIPTOR(*descriptor);
+	{
+		_descriptor = *descriptor;
+		_valid = true;
+	}
 }
 
 import_library::import_library(char* library_name, int ordinal, __int64 rva, bool win64)
+{
+	_initialize(library_name, NULL, ordinal, rva, win64);
+	_copy_names();
+}
+
+import_library::import_library(char* library_name, char* proc_name, __int64 rva, bool win64)
+{
+	if (proc_name != NULL)
+		_initialize(library_name, proc_name, 0, rva, win64);
+	_copy_names();
+}
+
+import_library::import_library(const export_entry& entry, __int64 rva, bool win64)
+{
+	_initialize(entry.library_name, entry.name, entry.ord, rva, win64);
+}
+
+void import_library::_initialize(const char* library_name, const char* proc_name, int ordinal, __int64 rva, bool win64)
 {
 	if (library_name == NULL || rva < 0 || rva > MAXDWORD)
 		return;
 	const SIZE_T length = strnlen_s(library_name, MAX_PE_IMAGE_SIZE);
 	if (length >= MAX_PE_IMAGE_SIZE)
 		return;
-	_library_name_len = length + 1;
-	_library_name = new char[_library_name_len];
-	memcpy(_library_name, library_name, _library_name_len);
-	_descriptor = new IMAGE_IMPORT_DESCRIPTOR();
-	_descriptor->TimeDateStamp = MAXDWORD;
-	_descriptor->ForwarderChain = MAXDWORD;
-	_descriptor->FirstThunk = static_cast<DWORD>(rva);
-	_thunk_entry = new IMAGE_THUNK_DATA64();
-	_thunk_entry->u1.Ordinal = (win64 ? IMAGE_ORDINAL_FLAG64 : IMAGE_ORDINAL_FLAG32) | (ordinal & 0xffff);
+	_library_name_len = static_cast<DWORD>(length + 1);
+	_library_name = library_name;
+	if (proc_name != NULL)
+	{
+		const SIZE_T proc_length = strnlen_s(proc_name, MAX_PE_IMAGE_SIZE);
+		if (proc_length > MAX_PE_IMAGE_SIZE - sizeof(WORD) - 1 ||
+			!range_fits(MAX_PE_IMAGE_SIZE, _library_name_len, proc_length + 1))
+			return;
+		_proc_name_len = static_cast<DWORD>(proc_length + 1);
+		_proc_name = proc_name;
+	}
+	_descriptor.TimeDateStamp = MAXDWORD;
+	_descriptor.ForwarderChain = MAXDWORD;
+	_descriptor.FirstThunk = static_cast<DWORD>(rva);
+	_thunk_entry.u1.Ordinal = proc_name == NULL ?
+		(win64 ? IMAGE_ORDINAL_FLAG64 : IMAGE_ORDINAL_FLAG32) | (ordinal & 0xffff) : 0;
+	_valid = true;
 }
 
-import_library::import_library(char* library_name, char* proc_name, __int64 rva, bool win64)
-	: import_library(library_name, 0, rva, win64)
+void import_library::_copy_names()
 {
-	if (!valid())
+	if (!_valid)
 		return;
-	const SIZE_T length = proc_name == NULL ? MAX_PE_IMAGE_SIZE : strnlen_s(proc_name, MAX_PE_IMAGE_SIZE);
-	if (length > MAX_PE_IMAGE_SIZE - sizeof(WORD) - 1)
+	_owned_names.reset(new char[static_cast<SIZE_T>(_library_name_len) + _proc_name_len]);
+	memcpy(_owned_names.get(), _library_name, _library_name_len);
+	_library_name = _owned_names.get();
+	if (_proc_name != NULL)
 	{
-		delete _descriptor;
-		_descriptor = NULL;
-		return;
+		memcpy(_owned_names.get() + _library_name_len, _proc_name, _proc_name_len);
+		_proc_name = _owned_names.get() + _library_name_len;
 	}
-	_import_by_name_len = length + 1 + sizeof(WORD);
-	_import_by_name = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(new char[_import_by_name_len]);
-	_import_by_name->Hint = 0;
-	memcpy(_import_by_name->Name, proc_name, length + 1);
-	_thunk_entry->u1.AddressOfData = 0;
 }
 
 void import_library::get_table_size(__int64& descriptor_size, __int64& extra_size)
@@ -189,8 +213,9 @@ void import_library::get_table_size(__int64& descriptor_size, __int64& extra_siz
 		descriptor_size = extra_size = -1;
 		return;
 	}
-	add_size(extra_size, _import_by_name_len);
-	if (_thunk_entry != NULL)
+	if (_proc_name != NULL)
+		add_size(extra_size, sizeof(WORD) + _proc_name_len);
+	if (_library_name != NULL)
 		add_size(extra_size, 2 * sizeof(IMAGE_THUNK_DATA64));
 	add_size(extra_size, _library_name_len);
 	add_size(descriptor_size, sizeof(IMAGE_IMPORT_DESCRIPTOR));
@@ -208,17 +233,18 @@ bool import_library::build_table(unsigned char* section, __int64 section_size, _
 		!table_rva(section_rva, 0, section_size))
 		return false;
 
-	IMAGE_IMPORT_DESCRIPTOR descriptor = *_descriptor;
+	IMAGE_IMPORT_DESCRIPTOR descriptor = _descriptor;
 	__int64 import_name_rva = 0;
-	if (_import_by_name != NULL)
+	if (_proc_name != NULL)
 	{
-		memcpy(section + static_cast<SIZE_T>(extra_offset), _import_by_name, _import_by_name_len);
+		memset(section + static_cast<SIZE_T>(extra_offset), 0, sizeof(WORD));
+		memcpy(section + static_cast<SIZE_T>(extra_offset) + sizeof(WORD), _proc_name, _proc_name_len);
 		import_name_rva = section_rva + extra_offset;
-		extra_offset += _import_by_name_len;
+		extra_offset += sizeof(WORD) + _proc_name_len;
 	}
-	if (_thunk_entry != NULL)
+	if (_library_name != NULL)
 	{
-		IMAGE_THUNK_DATA64 thunk = *_thunk_entry;
+		IMAGE_THUNK_DATA64 thunk = _thunk_entry;
 		if (import_name_rva != 0)
 			thunk.u1.AddressOfData = import_name_rva;
 		memcpy(section + static_cast<SIZE_T>(extra_offset), &thunk, sizeof(thunk));

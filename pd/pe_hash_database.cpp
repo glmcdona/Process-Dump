@@ -160,15 +160,35 @@ bool pe_hash_database::clear_database()
 	_clean_hashes.clear();
 	_ep_hashes.clear();
 	_epshort_hashes.clear();
+	_entrypoint_snapshot.reset();
 	LeaveCriticalSection( &_lock );
 	return true;
 }
 
-bool pe_hash_database::add_hashes(unordered_set<unsigned __int64> hashes)
+std::shared_ptr<const pe_hash_database::entrypoint_hashes> pe_hash_database::snapshot_entrypoints()
+{
+	EnterCriticalSection(&_lock);
+	std::unique_ptr<CRITICAL_SECTION, decltype(&LeaveCriticalSection)> release(&_lock, LeaveCriticalSection);
+	if (!_entrypoint_snapshot)
+	{
+		auto result = std::make_shared<entrypoint_hashes>();
+		result->full.insert(_ep_hashes.begin(), _ep_hashes.end());
+		result->short_hashes.insert(_epshort_hashes.begin(), _epshort_hashes.end());
+		for (auto hash : result->short_hashes)
+		{
+			result->minimum = (std::min)(result->minimum, hash);
+			result->maximum = (std::max)(result->maximum, hash);
+		}
+		_entrypoint_snapshot = std::move(result);
+	}
+	return _entrypoint_snapshot;
+}
+
+bool pe_hash_database::add_hashes(const unordered_set<unsigned __int64>& hashes)
 {
 	EnterCriticalSection( &_lock );
 
-	for (unordered_set<unsigned __int64>::iterator it=hashes.begin(); it!=hashes.end(); it++)
+	for (auto it=hashes.begin(); it!=hashes.end(); it++)
 	{
 		if( *it != 0 && _clean_hashes.count( *it ) == 0 )
 		{
@@ -182,23 +202,25 @@ bool pe_hash_database::add_hashes(unordered_set<unsigned __int64> hashes)
 }
 
 
-bool pe_hash_database::add_hashes_eps(unordered_set<unsigned __int64> hashes, unordered_set<unsigned __int64> hashes_short)
+bool pe_hash_database::add_hashes_eps(const unordered_set<unsigned __int64>& hashes, const unordered_set<unsigned __int64>& hashes_short)
 {
 	EnterCriticalSection(&_lock);
 
-	for (unordered_set<unsigned __int64>::iterator it = hashes.begin(); it != hashes.end(); it++)
+	for (auto it = hashes.begin(); it != hashes.end(); it++)
 	{
 		if (*it != 0 && _ep_hashes.count(*it) == 0)
 		{
 			_ep_hashes.insert(*it);
+			_entrypoint_snapshot.reset();
 		}
 	}
 
-	for (unordered_set<unsigned __int64>::iterator it = hashes_short.begin(); it != hashes_short.end(); it++)
+	for (auto it = hashes_short.begin(); it != hashes_short.end(); it++)
 	{
 		if (*it != 0 && _epshort_hashes.count(*it) == 0)
 		{
 			_epshort_hashes.insert(*it);
+			_entrypoint_snapshot.reset();
 		}
 	}
 
@@ -439,6 +461,7 @@ bool pe_hash_database::add_file(char* file)
 		if (_ep_hashes.count(hash_ep) == 0)
 		{
 			_ep_hashes.insert(hash_ep);
+			_entrypoint_snapshot.reset();
 			printf("...new entrypoint hash %s,0x%llX\n", file, hash_ep);
 		}
 		LeaveCriticalSection(&_lock);
@@ -451,6 +474,7 @@ bool pe_hash_database::add_file(char* file)
 		if (_epshort_hashes.count(hash_ep_short) == 0)
 		{
 			_epshort_hashes.insert(hash_ep_short);
+			_entrypoint_snapshot.reset();
 			printf("...new entrypoint short hash %s,0x%llX\n", file, hash_ep_short);
 		}
 		LeaveCriticalSection(&_lock);
