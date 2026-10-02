@@ -1,130 +1,58 @@
-name: BuildAndDeploy_CreateReleaseFromCommit
+name: Release selected commit
 
 on:
-  push:
   workflow_dispatch:
     inputs:
       commit:
         type: string
-        description: Sha1 commit to build and release.
+        description: Commit SHA to build and release
+        required: true
       version:
         type: string
-        description: Version to release it as. Eg v2.1.
+        description: Release version (for example v2.2)
+        required: true
 
-env:
-  # Path to the solution file relative to the root of the project.
-  SOLUTION_FILE_PATH: .
-
-  # Configuration type to build.
-  # You can convert this to a build matrix if you need coverage of multiple configuration types.
-  # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
-  BUILD_CONFIGURATION: Release
+permissions:
+  contents: read
 
 jobs:
-  build:
-    runs-on: windows-latest
-    
-    strategy:
-      matrix:
-        targetPlatform: [Win32, x64]
-    
-    env:
-      BUILD_FILE_PATH: .\${{ matrix.targetPlatform }}\Release\pd.exe
-
+  validate:
+    runs-on: windows-2022
     steps:
-    - uses: actions/checkout@v2
-      with:
-        ref: ${{ github.event.inputs.commit }}
-
-    - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v1.0.2
-
-    - name: Restore NuGet packages
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: nuget restore ${{env.SOLUTION_FILE_PATH}}
-
-    - name: Build
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      # Add additional options to the MSBuild command line here (like platform or verbosity level).
-      # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
-      run: msbuild /m /p:Configuration=${{ env.BUILD_CONFIGURATION }} ${{ env.SOLUTION_FILE_PATH }} /p:Platform=${{ matrix.targetplatform }}
-    
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v2
-      with:
-        name: ${{ matrix.targetPlatform }} Executable
-        path: ${{ env.BUILD_FILE_PATH }}
-    
-    - name: Upload build artifacts old x86
-      uses: actions/upload-artifact@v2
-      with:
-        name: ${{ matrix.targetPlatform }} Executable
-        path: .\Release\pd.exe
-    
-    - name: Upload build artifacts old x64
-      uses: actions/upload-artifact@v2
-      with:
-        name: ${{ matrix.targetPlatform }} Executable
-        path: .\x64\Release\pd.exe
-
+      - name: Validate release inputs
+        env:
+          COMMIT: ${{ inputs.commit }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:COMMIT -notmatch '^[0-9a-fA-F]{40}$') { throw "A full commit SHA is required" }
+          if ($env:VERSION -notmatch '^v[0-9]+\.[0-9]+(\.[0-9]+)?$') { throw "Invalid release version" }
+  build:
+    needs: validate
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ inputs.commit }}
   release:
     needs: build
-    runs-on: windows-latest
-    
+    runs-on: windows-2022
+    permissions:
+      contents: write
     steps:
-    - uses: actions/checkout@v2
-
-    - uses: actions/download-artifact@v2
-      id: executable_x86
-      with:
-        name: Win32 Executable
-    
-    - name: Rename
-      run: |
-        ren pd.exe pd32.exe
-    
-    - uses: actions/download-artifact@v2
-      id: executable_x64
-      with:
-        name: x64 Executable
-    
-    - name: Rename
-      run: |
-        ren pd.exe pd64.exe
-
-    - name: Display structure of downloaded files
-      run: ls -R
-  
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@latest
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.event.inputs.version }}
-        release_name: ${{ github.event.inputs.version }}
-        body: |
-          ${{ steps.Changelog.outputs.changelog }}
-        draft: false
-        prerelease: false
-    
-    # Upload release asset:   https://github.com/actions/upload-release-asset
-    - name: Update release asset x86
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}  # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
-        asset_path: ${{ steps.executable_x86.outputs.download-path }}\pd32.exe
-        asset_name: pd32.exe
-        asset_content_type: application/zip
-      
-    - name: Update release asset x64
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}  # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
-        asset_path: ${{ steps.executable_x64.outputs.download-path }}\pd64.exe
-        asset_name: pd64.exe
-        asset_content_type: application/zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: Win32 Executable
+          path: binaries\Win32
+      - uses: actions/download-artifact@v4
+        with:
+          name: x64 Executable
+          path: binaries\x64
+      - name: Publish tested binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
+        run: |
+          Move-Item binaries\Win32\pd.exe pd32.exe
+          Move-Item binaries\x64\pd.exe pd64.exe
+          gh release create $env:RELEASE_VERSION pd32.exe pd64.exe --target $env:RELEASE_COMMIT --title $env:RELEASE_VERSION --generate-notes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

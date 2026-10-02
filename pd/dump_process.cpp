@@ -1,5 +1,6 @@
 #include "StdAfx.h"
 #include "dump_process.h"
+#include "dump_path.h"
 
 
 
@@ -22,13 +23,13 @@ dump_process::dump_process(DWORD pid, pe_hash_database* db, PD_OPTIONS* options,
 	_db_clean = db;
 
 	// Dump this specified PID into the current directory
-	_ph = OpenProcess( PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION, false, pid);
+	_ph = OpenProcess( PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_DUP_HANDLE, false, pid);
 	if (_ph == NULL)
 	{
 		// try opening with minimal permissions. This works for most actions (except terminate hooking)
 		_ph = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid);
 		if (_ph != NULL && _options->Verbose)
-			fprintf(stderr, "WARNING: For PID 0x%x, we had to open handle with fewer permissions than expected. Dropped PROCESS_VM_WRITE and PROCESS_VM_OPERATION.\n", pid);
+			fprintf(stderr, "WARNING: For PID 0x%x, we had to open handle with fewer permissions than expected. Dropped PROCESS_VM_WRITE, PROCESS_VM_OPERATION and PROCESS_DUP_HANDLE.\n", pid);
 	}
 	
 	
@@ -41,20 +42,20 @@ dump_process::dump_process(DWORD pid, pe_hash_database* db, PD_OPTIONS* options,
 			_opened = true;
 
 			// Load the main module name
-			MODULEENTRY32 tmpModule;
+			MODULEENTRY32 tmpModule = {};
 			tmpModule.dwSize = sizeof(MODULEENTRY32);
 			if( Module32First(hSnapshot, &tmpModule) )
 			{
-				_process_name = new char[wcslen(tmpModule.szModule) + 1];
-				sprintf( _process_name, "%S", tmpModule.szModule );
-
-				// Replace all '.'s in filename with underscores
-				int i = 0;
-				while( _process_name[i] != 0 )
+				std::string converted;
+				if (module_names::to_ansi(tmpModule.szModule, _countof(tmpModule.szModule), converted, "process name"))
 				{
-					if( _process_name[i] == '.' )
-						_process_name[i] = '_';
-					i++;
+					_process_name = new char[converted.size() + 1];
+					memcpy(_process_name, converted.c_str(), converted.size() + 1);
+
+					// Preserve the existing process-label convention.
+					for (SIZE_T i = 0; i < converted.size(); ++i)
+						if (_process_name[i] == '.')
+							_process_name[i] = '_';
 				}
 				
 				_address_main_module = (unsigned __int64) tmpModule.modBaseAddr;
@@ -72,8 +73,11 @@ dump_process::dump_process(DWORD pid, pe_hash_database* db, PD_OPTIONS* options,
 					PrintLastError(L"dump_process CreateToolhelp32Snapshot");
 			}
 
-			_process_name = new char[strlen("unknown")+1];
-			strcpy( _process_name, "unknown" );
+		}
+		if (_process_name == NULL)
+		{
+			_process_name = new char[sizeof("unknown")];
+			memcpy(_process_name, "unknown", sizeof("unknown"));
 		}
 	}
 	else
@@ -88,6 +92,9 @@ dump_process::dump_process(DWORD pid, pe_hash_database* db, PD_OPTIONS* options,
 
 bool dump_process::get_process_name(char* process_name, SIZE_T byte_length)
 {
+	if (process_name == NULL || byte_length == 0)
+		return false;
+	process_name[0] = 0;
 	if (_process_name != NULL)
 	{
 		if (strlen(_process_name) < byte_length)
@@ -96,8 +103,6 @@ bool dump_process::get_process_name(char* process_name, SIZE_T byte_length)
 			return true;
 		}
 	}
-	if (byte_length > 0)
-		_process_name[0] = 0;
 	return false;
 }
 
@@ -450,6 +455,25 @@ bool dump_process::build_export_list(export_list* result, char* library, module_
 	return true;
 }
 
+bool dump_process::write_dump(pe_header* header, unsigned __int64 base, DWORD pid)
+{
+	const char* extension = header->is_exe() ? "exe" : (header->is_dll() ? "dll" : (header->is_sys() ? "sys" : "bin"));
+	std::string filename, error;
+	if (!dump_path::make_filename(_options->output_path, _process_name, pid, header->get_name(),
+		base, header->is_64(), extension, filename, error))
+	{
+		fprintf(stderr, "ERROR: Cannot name dump for PID 0x%x at %llX: %s.\n", pid, base, error.c_str());
+		return false;
+	}
+	printf(" dumping '%s' at %llX to file '%s'\n", extension, base, filename.c_str());
+	if (!header->write_image(&filename[0]))
+	{
+		fprintf(stderr, "ERROR: Failed to write dump for PID 0x%x at %llX to '%s'.\n", pid, base, filename.c_str());
+		return false;
+	}
+	return true;
+}
+
 void dump_process::dump_header(pe_header* header, __int64 base, DWORD pid)
 {
 	if( header->process_sections() )
@@ -466,22 +490,7 @@ void dump_process::dump_header(pe_header* header, __int64 base, DWORD pid)
 							printf(" preparing disk image for '%s' at %llX\n", header->get_name(), (__int64) base);
 					if( header->process_disk_image(&this->_export_list, this->_db_clean ) )
 					{
-						// Build the name that we will dump this image as
-						char* extension = ( header->is_exe() ? "exe" :
-														( header->is_dll() ? "dll" : 
-														( header->is_sys() ? "sys" : "bin" ) ) );
-						int length = MAX_PATH + FILENAME_MAX + 1;
-						char* filename = new char[length];
-						if( _options->output_path != NULL && strlen(_options->output_path) > 0 )
-							sprintf(filename, "%s\\%s_PID%x_%s_%llX_%s.%s", _options->output_path, _process_name, pid, header->get_name(), (__int64)  base, (header->is_64() ? "x64": "x86"), extension );
-						else
-							sprintf(filename, "%s_PID%x_%s_%llX_%s.%s", _process_name, pid, header->get_name(), (__int64)  base, (header->is_64() ? "x64": "x86"), extension );
-						
-						// Dump the module
-						printf(" dumping '%s' at %llX to file '%s'\n", extension, (__int64) base, filename);
-						header->write_image(filename);
-						
-						delete[] filename;
+						write_dump(header, base, pid);
 					}
 					else
 					{
@@ -579,6 +588,7 @@ bool dump_process::monitor_close_start()
 		// Load the exports needed for the hooks
 		module_list* modules = new module_list(_pid);
 		export_list* exports = new export_list();
+		build_export_list(exports, "KernelBase.dll", modules);
 		build_export_list(exports, "kernel32.dll", modules);
 		build_export_list(exports, "ntdll.dll", modules);
 		bool result = _term_hook->hook_terminate(exports);
@@ -607,7 +617,10 @@ bool dump_process::monitor_close_stop()
 {
 	if (_term_hook != NULL)
 	{
+		if (!_term_hook->unhock_terminate())
+			return false;
 		delete _term_hook;
+		_term_hook = NULL;
 		return true;
 	}
 	return true; // not hooked
@@ -624,9 +637,7 @@ bool dump_process::monitor_close_dump_and_resume()
 			dump_all();
 
 			// Resume it so that it closes normally
-			_term_hook->resume_terminate();
-
-			return true;
+			return _term_hook->resume_terminate();
 		}
 
 		return false; // was not waiting
@@ -740,22 +751,7 @@ void dump_process::dump_all()
 											}
 											else if (header->process_disk_image(&this->_export_list, this->_db_clean))
 											{
-												// Build the name that we will dump this image as
-												char* extension = (header->is_exe() ? "exe" :
-													(header->is_dll() ? "dll" :
-														(header->is_sys() ? "sys" : "bin")));
-												int length = MAX_PATH + FILENAME_MAX + 1;
-												char* filename = new char[length];
-												if (_options->output_path != NULL && strlen(_options->output_path) > 0)
-													sprintf(filename, "%s\\%s_PID%x_%s_%llX_%s.%s", _options->output_path, _process_name, _pid, header->get_name(), (__int64)base, (header->is_64() ? "x64" : "x86"), extension);
-												else
-													sprintf(filename, "%s_PID%x_%s_%llX_%s.%s", _process_name, _pid, header->get_name(), (__int64)base, (header->is_64() ? "x64" : "x86"), extension);
-
-												// Dump the module
-												printf(" dumping '%s' at %llX to file '%s'\n", extension, (__int64)base, filename);
-												header->write_image(filename);
-
-												delete[] filename;
+												write_dump(header, base, _pid);
 											}
 										}
 									}

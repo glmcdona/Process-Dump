@@ -1,96 +1,42 @@
-name: BuildAndDeploy_Develop
+name: Publish development binaries
 
 on:
   push:
-      branches:
-        - main
+    branches: [main]
   workflow_dispatch:
 
-env:
-  # Path to the solution file relative to the root of the project.
-  SOLUTION_FILE_PATH: .
-
-  # Configuration type to build.
-  # You can convert this to a build matrix if you need coverage of multiple configuration types.
-  # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
-  BUILD_CONFIGURATION: Release
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: windows-latest
-    
-    strategy:
-      matrix:
-        targetPlatform: [Win32, x64]
-    
-    env:
-      BUILD_FILE_PATH: .\${{ matrix.targetPlatform }}\Release\pd.exe
-
-    steps:
-    - uses: actions/checkout@v2
-
-    - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v1.0.2
-
-    - name: Restore NuGet packages
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: nuget restore ${{env.SOLUTION_FILE_PATH}}
-
-    - name: Build
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      # Add additional options to the MSBuild command line here (like platform or verbosity level).
-      # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
-      run: msbuild /m /p:Configuration=${{ env.BUILD_CONFIGURATION }} ${{ env.SOLUTION_FILE_PATH }} /p:Platform=${{ matrix.targetplatform }}
-    
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v2
-      with:
-        name: ${{ matrix.targetPlatform }} Executable
-        path: ${{ env.BUILD_FILE_PATH }}
-
+    uses: ./.github/workflows/build.yml
   release:
     needs: build
-    runs-on: windows-latest
-    
+    runs-on: windows-2022
+    permissions:
+      contents: write
     steps:
-    - uses: actions/checkout@v2
-
-    - uses: actions/download-artifact@v2
-      id: executable_x86
-      with:
-        name: Win32 Executable
-    
-    - name: Rename
-      run: |
-        ren pd.exe pd32.exe
-    
-    - uses: actions/download-artifact@v2
-      id: executable_x64
-      with:
-        name: x64 Executable
-    
-    - name: Rename
-      run: |
-        ren pd.exe pd64.exe
-
-    - name: Display structure of downloaded files
-      run: ls -R
-    
-    # Replace Develop release binaries
-    - name: Upload binaries to release
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: pd32.exe
-        tag: Develop
-        overwrite: true
-        file_glob: false
-      
-    - name: Upload binaries to release
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: pd64.exe
-        tag: Develop
-        overwrite: true
-        file_glob: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: Win32 Executable
+          path: binaries\Win32
+      - uses: actions/download-artifact@v4
+        with:
+          name: x64 Executable
+          path: binaries\x64
+      - name: Publish tested development binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          Move-Item binaries\Win32\pd.exe pd32.exe
+          Move-Item binaries\x64\pd.exe pd64.exe
+          gh release view Develop
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload Develop pd32.exe pd64.exe --clobber
+          } else {
+            gh release create Develop pd32.exe pd64.exe --target $env:RELEASE_COMMIT --title Develop --prerelease --notes "Development binaries"
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

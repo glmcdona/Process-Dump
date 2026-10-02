@@ -1,5 +1,52 @@
 #include "StdAfx.h"
 #include "pe_header.h"
+#include "dump_output.h"
+#include <limits.h>
+#include <memory>
+
+namespace
+{
+	bool image_size_fits(__int64 size)
+	{
+		return size >= 0 && static_cast<unsigned __int64>(size) <= MAX_PE_IMAGE_SIZE &&
+			static_cast<unsigned __int64>(size) <= SIZE_MAX && size <= MAXDWORD;
+	}
+}
+
+void pe_header::_clear_images()
+{
+	delete[] _image;
+	delete[] _disk_image;
+	delete _export_list;
+	_image = _disk_image = NULL;
+	_image_size = _disk_image_size = 0;
+	_export_list = NULL;
+	_header_export_directory = NULL;
+	_header_import_descriptors = NULL;
+	_header_import_descriptors_count = 0;
+	_header_sections = NULL;
+	_num_sections = 0;
+	_parsed_sections = false;
+	_unique_hash = _unique_hash_ep = _unique_hash_ep_short = 0;
+}
+
+void pe_header::_clear_header()
+{
+	_clear_images();
+	delete[] _raw_header;
+	_raw_header = NULL;
+	_raw_header_size = 0;
+	_header_dos = NULL;
+	_header_pe32 = NULL;
+	_header_pe64 = NULL;
+	_parsed_dos = _parsed_pe_32 = _parsed_pe_64 = false;
+}
+
+bool pe_header::_reject_size()
+{
+	fprintf(stderr, "WARNING: module '%s': invalid PE range or image exceeding the 256 MiB limit rejected.\n", get_name());
+	return false;
+}
 
 pe_header::pe_header( char* filename, PD_OPTIONS* options )
 {
@@ -232,13 +279,19 @@ bool pe_header::is_64()
 
 void pe_header::set_name(char* new_name)
 {
+	if (new_name == NULL)
+		return;
+	const SIZE_T length = strnlen_s(new_name, MAX_PE_IMAGE_SIZE);
+	if (length >= MAX_PE_IMAGE_SIZE)
+		return;
+	std::unique_ptr<char[]> name(new char[length + 1]);
+	memcpy(name.get(), new_name, length + 1);
 	// Set name to sue for this module
 	if( _name_filepath_short != NULL )
-		delete _name_filepath_short;
+		delete[] _name_filepath_short;
 
 	// Localize
-	_name_filepath_short = new char[strlen(new_name) + 1];
-	strcpy_s(_name_filepath_short, strlen(new_name) + 1, new_name);
+	_name_filepath_short = name.release();
 	_name_filepath_short_size = strlen(_name_filepath_short);
 }
 
@@ -290,7 +343,7 @@ bool pe_header::process_hash( )
 		do
 		{
 			more = false;
-			if( _test_read( _image, _image_size, _image + offset, read_size ) )
+			if( _image != NULL && range_fits(_image_size, offset, read_size) )
 			{
 				unsigned __int64 new_dw;
 				if( read_size == 4 )
@@ -368,7 +421,7 @@ unsigned __int64 pe_header::_hash_short_asm(SIZE_T offset)
 	}
 
 	// Load the 8 bytes at the offset as the short hash
-	if (_test_read(_image, _image_size, _image + offset, 8))
+	if (_image != NULL && range_fits(_image_size, offset, 8))
 	{
 		result = *((unsigned __int64*)(_image + offset));
 
@@ -422,7 +475,7 @@ unsigned __int64 pe_header::_hash_asm(SIZE_T offset)
 		do
 		{
 			more = false;
-			if (_test_read(_image, _image_size, _image + offset, 20))
+			if (_image != NULL && range_fits(_image_size, offset, 20))
 			{
 				// Disassemble
 				more = true;
@@ -533,18 +586,7 @@ bool pe_header::process_hash_ep()
 
 bool pe_header::write_image( char* filename )
 {
-	// Writes the loaded and reconstructed memory image to a file
-	if( _disk_image_size > 0 )
-	{
-		FILE* fh = fopen( filename, "wb" );
-		if( fh != NULL )
-		{
-			// Write the image
-			fwrite( _disk_image, 1, _disk_image_size, fh );
-			fclose(fh);
-		}
-	}
-	return false;
+	return write_new_dump(filename, _disk_image, _disk_image_size);
 }
 
 IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports )
@@ -577,7 +619,7 @@ IMPORT_SUMMARY pe_header::get_imports_information( export_list* exports, __int64
 
 	hash<string> hasher;
 	
-	if( this->_parsed_sections )
+	if( this->_parsed_sections && exports != NULL && _image_size >= 8 && size_limit >= 8 )
 	{
 		// Add matches to exports in this process
 		unsigned __int32 cand32_last = 0;
@@ -702,6 +744,9 @@ bool pe_header::build_pe_header( __int64 size, bool amd64 )
 
 bool pe_header::build_pe_header( __int64 size, bool amd64, int num_sections_limit )
 {
+	_clear_header();
+	if (!image_size_fits(size) || num_sections_limit <= 0)
+		return _reject_size();
 	if( _stream != NULL )
 	{
 		_raw_header_size = 0x2000;
@@ -843,6 +888,12 @@ bool pe_header::build_pe_header( __int64 size, bool amd64, int num_sections_limi
 		while( _stream->estimate_section_size(image_size) != 0 && image_size >= size && _num_sections < 99 && _num_sections < num_sections_limit )
 		{
 			__int64 est_size = _stream->estimate_section_size(image_size);
+			if (!image_size_fits(est_size) || est_size == 0 ||
+				!range_fits(MAX_PE_IMAGE_SIZE, static_cast<SIZE_T>(image_size), static_cast<SIZE_T>(est_size)))
+			{
+				_clear_header();
+				return _reject_size();
+			}
 			
 			_header_sections[_num_sections].PointerToRawData = image_size;
 			_header_sections[_num_sections].SizeOfRawData = est_size;
@@ -883,13 +934,19 @@ bool pe_header::build_pe_header( __int64 size, bool amd64, int num_sections_limi
 
 bool pe_header::process_pe_header( )
 {
+	_clear_header();
 	if( _options->Verbose )
 		fprintf( stdout, "INFO: Loading PE header for %s.\n", this->get_name() );
 
 	if( _stream != NULL )
 	{
 		// Request the block size of the first region
-		_raw_header_size = _stream->block_size(0);
+		const unsigned __int64 block_size = _stream->block_size(0);
+		if (block_size > MAX_PE_IMAGE_SIZE)
+			return _reject_size();
+		_raw_header_size = static_cast<SIZE_T>(min(block_size, 16ULL * 1024 * 1024));
+		if (_raw_header_size == 0)
+			return false;
 		_raw_header = new unsigned char[_raw_header_size];
 		
 		if( _raw_header_size >= 0x500 )
@@ -908,6 +965,9 @@ bool pe_header::process_pe_header( )
 						this->_parsed_dos = true;
 						
 						// Parse the PE header
+						if (_header_dos->e_lfanew < 0 ||
+							!range_fits(_raw_header_size, static_cast<SIZE_T>(_header_dos->e_lfanew), sizeof(IMAGE_NT_HEADERS64)))
+							return false;
 						unsigned char* base_pe = _header_dos->e_lfanew + _raw_header;
 						
 						if( _test_read( _raw_header, _raw_header_size, base_pe, sizeof(IMAGE_NT_HEADERS64) ) )
@@ -958,6 +1018,48 @@ bool pe_header::process_pe_header( )
 
 bool pe_header::process_sections( )
 {
+	_clear_images();
+	if (!_parsed_pe_32 && !_parsed_pe_64)
+		return false;
+	const SIZE_T nt_size = _parsed_pe_32 ? sizeof(IMAGE_NT_HEADERS32) : sizeof(IMAGE_NT_HEADERS64);
+	const SIZE_T section_offset = static_cast<SIZE_T>(_header_dos->e_lfanew) + nt_size;
+	WORD section_count = _parsed_pe_32 ? _header_pe32->FileHeader.NumberOfSections : _header_pe64->FileHeader.NumberOfSections;
+	const DWORD declared_image_size = _parsed_pe_32 ? _header_pe32->OptionalHeader.SizeOfImage : _header_pe64->OptionalHeader.SizeOfImage;
+	const DWORD headers_size = _parsed_pe_32 ? _header_pe32->OptionalHeader.SizeOfHeaders : _header_pe64->OptionalHeader.SizeOfHeaders;
+	if (section_count == 0 || !range_fits(_raw_header_size, section_offset, sizeof(IMAGE_SECTION_HEADER)) ||
+		declared_image_size > MAX_PE_IMAGE_SIZE)
+		return _reject_size();
+	section_count = min(section_count, 0x100);
+	if (!range_fits(_raw_header_size, section_offset, section_count * sizeof(IMAGE_SECTION_HEADER)))
+		section_count = static_cast<WORD>((_raw_header_size - section_offset - 1) / sizeof(IMAGE_SECTION_HEADER));
+	if (section_count == 0)
+		return _reject_size();
+	const IMAGE_SECTION_HEADER* sections = reinterpret_cast<const IMAGE_SECTION_HEADER*>(_raw_header + section_offset);
+	const IMAGE_SECTION_HEADER& last = sections[section_count - 1];
+	if (!range_fits(MAX_PE_IMAGE_SIZE, last.VirtualAddress, last.Misc.VirtualSize))
+		return _reject_size();
+	SIZE_T checked_image_size = last.VirtualAddress + last.Misc.VirtualSize;
+	if (last.Misc.VirtualSize > MAX_SECTION_SIZE)
+	{
+		const SIZE_T maximum_end = static_cast<SIZE_T>(last.VirtualAddress) + MAX_SECTION_SIZE;
+		checked_image_size = declared_image_size > last.VirtualAddress && declared_image_size < maximum_end ?
+			declared_image_size : maximum_end;
+	}
+	checked_image_size = max(checked_image_size, declared_image_size);
+	if (checked_image_size == 0 || checked_image_size > MAX_PE_IMAGE_SIZE ||
+		!range_fits(checked_image_size, 0, headers_size))
+		return _reject_size();
+	for (WORD i = 0; i < section_count; ++i)
+	{
+		const IMAGE_SECTION_HEADER& section = sections[i];
+		if (!range_fits(checked_image_size, section.VirtualAddress, 0) ||
+			!range_fits(MAX_PE_IMAGE_SIZE, section.VirtualAddress, section.Misc.VirtualSize) ||
+			section.SizeOfRawData > MAX_PE_IMAGE_SIZE ||
+			(_stream->file_alignment &&
+				(!range_fits(checked_image_size, section.VirtualAddress, section.SizeOfRawData) ||
+				 !range_fits(LONG_MAX, section.PointerToRawData, section.SizeOfRawData))))
+			return _reject_size();
+	}
 	if( _options->Verbose )
 		fprintf( stdout, "INFO: Loading sections for %s.\n", this->get_name() );
 
@@ -1003,7 +1105,7 @@ bool pe_header::process_sections( )
 				for( int i = 0; i < this->_num_sections; i++ )
 				{
 					if( _test_read( _raw_header, _raw_header_size, this->_header_sections[i].Name, 0x40 ) )
-						fprintf( stdout, "INFO: %s\t#%i\t%s\t0x%x\t0x%x\n", this->get_name(), i, this->_header_sections[i].Name, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
+						fprintf( stdout, "INFO: %s\t#%i\t%.8s\t0x%x\t0x%x\n", this->get_name(), i, this->_header_sections[i].Name, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
 					else
 						fprintf( stdout, "INFO: %s\t#%i\tINVALID ADDRESS\t0x%x\t0x%x\n", this->get_name(), i, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
 				}
@@ -1035,7 +1137,7 @@ bool pe_header::process_sections( )
 						_stream->get_location(location, FILEPATH_SIZE + 1);
 						fprintf( stderr, "WARNING: module '%s' at %s. Image size of last section appears incorrect, using built-in max section size of 0x%x instead. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 							this->get_name(), location,
-							MAX_SECTION_SIZE * (_num_sections+1));
+							MAX_SECTION_SIZE);
 						delete[] location;
 						image_size = _header_sections[_num_sections - 1].VirtualAddress + MAX_SECTION_SIZE;
 					}
@@ -1048,15 +1150,10 @@ bool pe_header::process_sections( )
 				image_size = _header_pe32->OptionalHeader.SizeOfImage;
 			
 			// Perform a sanity check on the resulting image size
-			if( image_size > MAX_SECTION_SIZE * (_num_sections+1)  )
+			if( image_size > MAX_PE_IMAGE_SIZE )
 			{
-				char* location = new char[FILEPATH_SIZE + 1];
-				_stream->get_location(location, FILEPATH_SIZE + 1);
-				fprintf( stderr, "WARNING: module '%s' at %s. Large image size of 0x%x changed to 0x%x as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
-					this->get_name(), location,
-					image_size, MAX_SECTION_SIZE * (_num_sections+1) );
-				delete[] location;
-				image_size = MAX_SECTION_SIZE * (_num_sections+1);
+				_clear_images();
+				return _reject_size();
 			}
 
 			// Now lets build a proper image of this file with virtual alignment
@@ -1098,8 +1195,8 @@ bool pe_header::process_sections( )
 					for( int i = 0; i < this->_num_sections; i++ )
 					{
 						// Test the destination is valid
-						if( _test_read( _image, _image_size,
-							_image + (SIZE_T) this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData ) )
+						if( range_fits(_image_size, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData) &&
+							range_fits(LONG_MAX, this->_header_sections[i].PointerToRawData, this->_header_sections[i].SizeOfRawData) )
 						{
 							// Read in this section
 							if( !_stream->read( this->_header_sections[i].PointerToRawData, this->_header_sections[i].SizeOfRawData,
@@ -1174,7 +1271,7 @@ bool pe_header::process_sections( )
 			{
 				for( int i = 0; i < this->_num_sections; i++ )
 				{
-					fprintf( stdout, "INFO: %s\t#%i\t%s\t0x%x\t0x%x\n", this->get_name(), i, this->_header_sections[i].Name, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
+					fprintf( stdout, "INFO: %s\t#%i\t%.8s\t0x%x\t0x%x\n", this->get_name(), i, this->_header_sections[i].Name, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData );
 				}
 			}
 
@@ -1203,7 +1300,7 @@ bool pe_header::process_sections( )
 						_stream->get_location(location, FILEPATH_SIZE + 1);
 						fprintf( stderr, "WARNING: module '%s' at %s. Image size of last section appears incorrect, using built-in max section size of 0x%x instead. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
 							this->get_name(), location,
-							MAX_SECTION_SIZE * (_num_sections+1));
+							MAX_SECTION_SIZE);
 						delete[] location;
 						image_size = _header_sections[_num_sections - 1].VirtualAddress + MAX_SECTION_SIZE;
 					}
@@ -1216,15 +1313,10 @@ bool pe_header::process_sections( )
 				image_size = _header_pe64->OptionalHeader.SizeOfImage;
 			
 			// Perform a sanity check on the resulting image size
-			if( image_size > MAX_SECTION_SIZE * (_num_sections+1)  )
+			if( image_size > MAX_PE_IMAGE_SIZE )
 			{
-				char* location = new char[FILEPATH_SIZE + 1];
-				_stream->get_location(location, FILEPATH_SIZE + 1);
-				fprintf( stderr, "WARNING: module '%s' at %s. Large image size of 0x%x changed to 0x%x as part of sanity check. This could be as a result of a custom code to load a library by means other than LoadLibrary().\n",
-					this->get_name(), location,
-					image_size, MAX_SECTION_SIZE * (_num_sections+1) );
-				delete[] location;
-				image_size = MAX_SECTION_SIZE * (_num_sections+1);
+				_clear_images();
+				return _reject_size();
 			}
 
 			// Now lets build a proper image of this file with virtual alignment
@@ -1266,8 +1358,8 @@ bool pe_header::process_sections( )
 					for( int i = 0; i < this->_num_sections; i++ )
 					{
 						// Test the destination is valid
-						if( _test_read( _image, _image_size,
-							_image + (SIZE_T) this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData ) )
+						if( range_fits(_image_size, this->_header_sections[i].VirtualAddress, this->_header_sections[i].SizeOfRawData) &&
+							range_fits(LONG_MAX, this->_header_sections[i].PointerToRawData, this->_header_sections[i].SizeOfRawData) )
 						{
 							// Read in this section
 							if( !_stream->read( this->_header_sections[i].PointerToRawData, this->_header_sections[i].SizeOfRawData,
@@ -1310,22 +1402,42 @@ bool pe_header::process_sections( )
 
 bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash_database)
 {
+	delete[] _disk_image;
+	_disk_image = NULL;
+	_disk_image_size = 0;
+	if (!_parsed_sections || _num_sections <= 0 || _image == NULL || _image_size == 0 ||
+		!image_size_fits(_image_size) || (!_parsed_pe_32 && !_parsed_pe_64))
+		return false;
+	const DWORD section_alignment = _parsed_pe_32 ? _header_pe32->OptionalHeader.SectionAlignment : _header_pe64->OptionalHeader.SectionAlignment;
+	const DWORD file_alignment = _parsed_pe_32 ? _header_pe32->OptionalHeader.FileAlignment : _header_pe64->OptionalHeader.FileAlignment;
+	const DWORD header_size = _parsed_pe_32 ? _header_pe32->OptionalHeader.SizeOfHeaders : _header_pe64->OptionalHeader.SizeOfHeaders;
+	if (section_alignment == 0 || file_alignment == 0 || section_alignment > MAX_PE_IMAGE_SIZE ||
+		file_alignment > MAX_PE_IMAGE_SIZE || header_size > MAX_PE_IMAGE_SIZE ||
+		(_options->ImportRec && exports == NULL))
+		return _reject_size();
+	for (int i = 0; i < _num_sections; ++i)
+	{
+		if (!range_fits(_image_size, _header_sections[i].VirtualAddress, 0) ||
+			!range_fits(MAX_PE_IMAGE_SIZE, _header_sections[i].VirtualAddress, _header_sections[i].Misc.VirtualSize) ||
+			_header_sections[i].SizeOfRawData > MAX_PE_IMAGE_SIZE)
+			return _reject_size();
+	}
 	if( this->_parsed_sections )
 	{
 		if( this->_parsed_pe_32 )
 		{
 			// Re-build the Original Entry Point OEP if it looks to be not valid
-			if (_header_pe32->OptionalHeader.AddressOfEntryPoint == 0 ||
+			if (hash_database != NULL && (_header_pe32->OptionalHeader.AddressOfEntryPoint == 0 ||
 				_header_pe32->OptionalHeader.AddressOfEntryPoint == 0x2000 ||
-				!_test_read(_image, _image_size, _image + _header_pe32->OptionalHeader.AddressOfEntryPoint, 20) ||
-				_options->ForceReconstructEntryPoint)
+				!range_fits(_image_size, _header_pe32->OptionalHeader.AddressOfEntryPoint, 20) ||
+				_options->ForceReconstructEntryPoint))
 			{
 				printf("INFO: Re-building entrypoint. Original entrypoint invalid: %x\n", _header_pe32->OptionalHeader.AddressOfEntryPoint);
 
 				// The entry-point looks invalid, search for candidates to reconstruct it
 				unsigned __int64 best_entrypoint = 0;
 
-				for (__int64 offset = 0x1000; offset < _image_size - 8; offset += 1)
+				for (__int64 offset = 0x1000; _image_size >= 8 && offset < _image_size - 8; offset += 1)
 				{
 					// Check if this is a possible entrypoint
 					unsigned __int64 cand = *((__int64*)(_image + offset));
@@ -1369,16 +1481,19 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 			//   4. For each binary patch found above, add a HintName and ImportAddress point so the loads
 			//      will recognize it correctly for analysis (IDA).
 			unsigned char* larger_image;
+			std::unique_ptr<unsigned char[]> larger_image_storage;
 			__int64 larger_image_size;
 			if( _options->ImportRec )
 			{
 				// Start the with the original import descriptor list
-				pe_imports* peimp = new pe_imports( _image, _image_size, _header_import_descriptors, false );
+				std::unique_ptr<pe_imports> peimp(new pe_imports( _image, _image_size, _header_import_descriptors, false ));
+				if (!peimp->valid())
+					return _reject_size();
 				
 				// Add matches to exports in this process
 				int count = 0;
 				unsigned __int64 cand_last = 0;
-				for(__int64 offset = 0; offset < _image_size - 8; offset+=4 )
+				for(__int64 offset = 0; _image_size >= 8 && offset < _image_size - 8; offset+=4 )
 				{
 					// Check if this 4-gram or 8-gram points to an export
 					unsigned __int64 cand = *((__int32*)(_image + offset));
@@ -1392,6 +1507,8 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 							peimp->add_fixup(entry.library_name, entry.name, offset, this->_parsed_pe_64);
 						else
 							peimp->add_fixup(entry.library_name, entry.ord, offset, this->_parsed_pe_64);
+						if (!peimp->valid())
+							return _reject_size();
 						count++;
 					}
 					else
@@ -1406,15 +1523,19 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				__int64 descriptor_size = 0;
 				__int64 data_size = 0;
 				peimp->get_table_size( descriptor_size, data_size );
-				__int64 new_section_size = this->_section_align(data_size+descriptor_size, this->_header_pe32->OptionalHeader.SectionAlignment);
-				
-				
-				// Increase the size of the last section
-				_header_sections[_num_sections-1].Misc.VirtualSize = this->_section_align(_header_sections[_num_sections-1].Misc.VirtualSize, this->_header_pe32->OptionalHeader.SectionAlignment) + new_section_size;
-				_header_sections[_num_sections-1].SizeOfRawData = _header_sections[_num_sections-1].Misc.VirtualSize;
-
-				larger_image_size = this->_section_align((long long) this->_image_size, this->_header_pe32->OptionalHeader.SectionAlignment) + new_section_size;
-				larger_image = new unsigned char[larger_image_size];
+				if (!image_size_fits(descriptor_size) || !image_size_fits(data_size) ||
+					!image_size_fits(data_size + descriptor_size))
+					return _reject_size();
+				const __int64 new_section_size = _section_align(data_size + descriptor_size, section_alignment);
+				const __int64 section_start = _section_align(static_cast<__int64>(_image_size), section_alignment);
+				const __int64 last_size = _section_align(static_cast<__int64>(_header_sections[_num_sections - 1].Misc.VirtualSize), section_alignment);
+				larger_image_size = section_start + new_section_size;
+				if (new_section_size <= 0 || section_start < static_cast<__int64>(_image_size) || last_size < 0 ||
+					!image_size_fits(larger_image_size) || !image_size_fits(last_size + new_section_size) ||
+					!image_size_fits(_header_sections[_num_sections - 1].VirtualAddress + last_size + new_section_size))
+					return _reject_size();
+				larger_image_storage.reset(new unsigned char[static_cast<SIZE_T>(larger_image_size)]);
+				larger_image = larger_image_storage.get();
 				memset(larger_image, 0, larger_image_size);
 				memcpy(larger_image, _image, _image_size);
 
@@ -1422,21 +1543,25 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 					printf( "INFO: Writing added import table.\n" );
 				
 				// Write to the new section
-				peimp->build_table( larger_image + this->_section_align((long long) _image_size, this->_header_pe32->OptionalHeader.SectionAlignment), new_section_size, (__int64) _image_size, (__int64) 0, descriptor_size );
+				if (!peimp->build_table(larger_image + static_cast<SIZE_T>(section_start),
+					new_section_size, static_cast<__int64>(_image_size), 0, descriptor_size))
+					return _reject_size();
+				_header_sections[_num_sections - 1].Misc.VirtualSize = static_cast<DWORD>(last_size + new_section_size);
+				_header_sections[_num_sections - 1].SizeOfRawData = _header_sections[_num_sections - 1].Misc.VirtualSize;
 				
 				if( _options->Verbose )
 					printf( "INFO: Updating import data directory.\n" );
 
 				// Update the PE header to refer to it
-				_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = this->_section_align((long long) _image_size, this->_header_pe32->OptionalHeader.SectionAlignment);
-				_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = descriptor_size;
+				_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = static_cast<DWORD>(section_start);
+				_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = static_cast<DWORD>(descriptor_size);
 				
-				delete peimp;
 			}
 			else
 			{
 				larger_image_size = _image_size;
-				larger_image = new unsigned char[larger_image_size];
+				larger_image_storage.reset(new unsigned char[static_cast<SIZE_T>(larger_image_size)]);
+				larger_image = larger_image_storage.get();
 				memset(larger_image, 0, larger_image_size);
 				memcpy(larger_image, _image, _image_size);
 			}
@@ -1453,8 +1578,11 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 			_header_pe32->OptionalHeader.FileAlignment = _header_pe32->OptionalHeader.SectionAlignment;
 			
 			// Adjust the physical size of each section to use the virtual size
-			_header_pe32->OptionalHeader.SizeOfHeaders = _section_align(_header_pe32->OptionalHeader.SizeOfHeaders, _header_pe32->OptionalHeader.FileAlignment);
-			DWORD required_space = _section_align( _header_pe32->OptionalHeader.SizeOfHeaders, _header_pe32->OptionalHeader.SectionAlignment);
+			const __int64 aligned_headers = _section_align(static_cast<__int64>(_header_pe32->OptionalHeader.SizeOfHeaders), section_alignment);
+			if (!image_size_fits(aligned_headers))
+				return _reject_size();
+			_header_pe32->OptionalHeader.SizeOfHeaders = static_cast<DWORD>(aligned_headers);
+			SIZE_T required_space = static_cast<SIZE_T>(aligned_headers);
 			
 			for( int i = 0; i < _num_sections; i++ )
 			{
@@ -1489,7 +1617,9 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				}
 				
 				// Truncate VirtualSize to fit inside image size
-				if( this->_header_sections[i].Misc.VirtualSize + this->_header_sections[i].VirtualAddress > larger_image_size )
+				if( this->_header_sections[i].VirtualAddress > static_cast<SIZE_T>(larger_image_size) )
+					return _reject_size();
+				if( this->_header_sections[i].Misc.VirtualSize > static_cast<SIZE_T>(larger_image_size) - this->_header_sections[i].VirtualAddress )
 				{
 					char* location = new char[FILEPATH_SIZE + 1];
 					_stream->get_location(location, FILEPATH_SIZE + 1);
@@ -1509,7 +1639,11 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				// Update the pointer to raw data to be correct
 				_header_sections[i].PointerToRawData = required_space;
 				
-				required_space = _section_align( required_space + _header_sections[i].SizeOfRawData, _header_pe32->OptionalHeader.FileAlignment );
+				const __int64 next_space = _section_align(static_cast<__int64>(required_space) + _header_sections[i].SizeOfRawData, section_alignment);
+				if (!image_size_fits(next_space) ||
+					!range_fits(static_cast<SIZE_T>(larger_image_size), _header_sections[i].VirtualAddress, _header_sections[i].SizeOfRawData))
+					return _reject_size();
+				required_space = static_cast<SIZE_T>(next_space);
 			}
 			
 			// Set the size of image
@@ -1557,38 +1691,34 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 							printf( "INFO: Packing down section %i.\n", i);
 
 						// Copy this section if the source and destination are both within acceptable bounds
-						if( _test_read( _disk_image, _disk_image_size,
-							_disk_image + (SIZE_T) _header_sections[i].PointerToRawData, _header_sections[i].SizeOfRawData ) &&
-							_test_read( larger_image, larger_image_size,
-							larger_image + (SIZE_T) _header_sections[i].VirtualAddress, _header_sections[i].SizeOfRawData ))
+						if( range_fits(_disk_image_size, _header_sections[i].PointerToRawData, _header_sections[i].SizeOfRawData) &&
+							range_fits(static_cast<SIZE_T>(larger_image_size), _header_sections[i].VirtualAddress, _header_sections[i].SizeOfRawData) )
 						{
 							memcpy( _disk_image + _header_sections[i].PointerToRawData, larger_image + _header_sections[i].VirtualAddress, _header_sections[i].SizeOfRawData );
 						}
 					}
 				}
 
-				delete [] larger_image;
 				if( _options->Verbose )
 					printf( "INFO: Done processing disk image.\n");
 
 				return true;
 			}
-			delete [] larger_image;	
 		}
 		else if( this->_parsed_pe_64 )
 		{
 			// Re-build the Original Entry Point OEP if it looks to be not valid
-			if (_header_pe64->OptionalHeader.AddressOfEntryPoint == 0 ||
+			if (hash_database != NULL && (_header_pe64->OptionalHeader.AddressOfEntryPoint == 0 ||
 				_header_pe64->OptionalHeader.AddressOfEntryPoint == 0x2000 ||
-				!_test_read(_image, _image_size, _image + _header_pe64->OptionalHeader.AddressOfEntryPoint, 20) ||
-				_options->ForceReconstructEntryPoint)
+				!range_fits(_image_size, _header_pe64->OptionalHeader.AddressOfEntryPoint, 20) ||
+				_options->ForceReconstructEntryPoint))
 			{
 				printf("INFO: Re-building entrypoint. Original entrypoint invalid: %x\n", _header_pe64->OptionalHeader.AddressOfEntryPoint);
 
 				// The entry-point looks invalid, search for candidates to reconstruct it
 				unsigned __int64 best_entrypoint = 0;
 
-				for (__int64 offset = 0x1000; offset < _image_size - 8; offset += 1)
+				for (__int64 offset = 0x1000; _image_size >= 8 && offset < _image_size - 8; offset += 1)
 				{
 					// Check if this is a possible entrypoint
 					unsigned __int64 cand = *((__int64*)(_image + offset));
@@ -1632,16 +1762,19 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 			//   4. For each binary patch found above, add a HintName and ImportAddress point so the loads
 			//      will recognize it correctly for analysis (IDA).
 			unsigned char* larger_image;
+			std::unique_ptr<unsigned char[]> larger_image_storage;
 			__int64 larger_image_size;
 			if( _options->ImportRec )
 			{
 				// Start the with the original import descriptor list
-				pe_imports* peimp = new pe_imports( _image, _image_size, _header_import_descriptors, true );
+				std::unique_ptr<pe_imports> peimp(new pe_imports( _image, _image_size, _header_import_descriptors, true ));
+				if (!peimp->valid())
+					return _reject_size();
 				
 				// Add matches to exports in this process
 				int count = 0;
 				unsigned __int64 cand_last = 0;
-				for(__int64 offset = 0; offset < _image_size - 8; offset+=4 )
+				for(__int64 offset = 0; _image_size >= 8 && offset < _image_size - 8; offset+=4 )
 				{
 					// Check if this 4-gram or 8-gram points to an export
 					unsigned __int64 cand = *((unsigned __int64*)(_image + offset));
@@ -1655,6 +1788,8 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 							peimp->add_fixup(entry.library_name, entry.name, offset, this->_parsed_pe_64);
 						else
 							peimp->add_fixup(entry.library_name, entry.ord, offset, this->_parsed_pe_64);
+						if (!peimp->valid())
+							return _reject_size();
 						count++;
 					}
 					else
@@ -1669,16 +1804,19 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				__int64 descriptor_size = 0;
 				__int64 data_size = 0;
 				peimp->get_table_size( descriptor_size, data_size );
-				__int64 new_section_size = this->_section_align(data_size+descriptor_size, this->_header_pe64->OptionalHeader.SectionAlignment);
-				
-				
-				// Increase the size of the last section
-				_header_sections[_num_sections-1].Misc.VirtualSize = this->_section_align(_header_sections[_num_sections-1].Misc.VirtualSize, this->_header_pe64->OptionalHeader.SectionAlignment) + new_section_size;
-				_header_sections[_num_sections-1].SizeOfRawData = _header_sections[_num_sections-1].Misc.VirtualSize;
-
-				larger_image_size = this->_section_align((long long) this->_image_size, this->_header_pe64->OptionalHeader.SectionAlignment) + new_section_size;
-				
-				larger_image = new unsigned char[larger_image_size];
+				if (!image_size_fits(descriptor_size) || !image_size_fits(data_size) ||
+					!image_size_fits(data_size + descriptor_size))
+					return _reject_size();
+				const __int64 new_section_size = _section_align(data_size + descriptor_size, section_alignment);
+				const __int64 section_start = _section_align(static_cast<__int64>(_image_size), section_alignment);
+				const __int64 last_size = _section_align(static_cast<__int64>(_header_sections[_num_sections - 1].Misc.VirtualSize), section_alignment);
+				larger_image_size = section_start + new_section_size;
+				if (new_section_size <= 0 || section_start < static_cast<__int64>(_image_size) || last_size < 0 ||
+					!image_size_fits(larger_image_size) || !image_size_fits(last_size + new_section_size) ||
+					!image_size_fits(_header_sections[_num_sections - 1].VirtualAddress + last_size + new_section_size))
+					return _reject_size();
+				larger_image_storage.reset(new unsigned char[static_cast<SIZE_T>(larger_image_size)]);
+				larger_image = larger_image_storage.get();
 				memset(larger_image, 0, larger_image_size);
 				memcpy(larger_image, _image, _image_size);
 
@@ -1686,21 +1824,25 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 					printf( "INFO: Writing added import table.\n" );
 				
 				// Write to the new section
-				peimp->build_table( larger_image + this->_section_align((long long) this->_image_size, this->_header_pe64->OptionalHeader.SectionAlignment), new_section_size, (__int64) _image_size, (__int64) 0, descriptor_size );
+				if (!peimp->build_table(larger_image + static_cast<SIZE_T>(section_start),
+					new_section_size, static_cast<__int64>(_image_size), 0, descriptor_size))
+					return _reject_size();
+				_header_sections[_num_sections - 1].Misc.VirtualSize = static_cast<DWORD>(last_size + new_section_size);
+				_header_sections[_num_sections - 1].SizeOfRawData = _header_sections[_num_sections - 1].Misc.VirtualSize;
 				
 				if( _options->Verbose )
 					printf( "INFO: Updating import data directory.\n" );
 
 				// Update the PE header to refer to it
-				_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = this->_section_align((long long) this->_image_size, this->_header_pe64->OptionalHeader.SectionAlignment);
-				_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = descriptor_size;
+				_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = static_cast<DWORD>(section_start);
+				_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = static_cast<DWORD>(descriptor_size);
 				
-				delete peimp;
 			}
 			else
 			{
 				larger_image_size = _image_size;
-				larger_image = new unsigned char[larger_image_size];
+				larger_image_storage.reset(new unsigned char[static_cast<SIZE_T>(larger_image_size)]);
+				larger_image = larger_image_storage.get();
 				memset(larger_image, 0, larger_image_size);
 				memcpy(larger_image, _image, _image_size);
 			}
@@ -1719,8 +1861,11 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 			_header_pe64->OptionalHeader.FileAlignment = _header_pe64->OptionalHeader.SectionAlignment;
 			
 			// Adjust the physical size of each section to use the virtual size
-			_header_pe64->OptionalHeader.SizeOfHeaders = _section_align(_header_pe64->OptionalHeader.SizeOfHeaders, _header_pe64->OptionalHeader.FileAlignment);
-			DWORD required_space = _section_align( _header_pe64->OptionalHeader.SizeOfHeaders, _header_pe64->OptionalHeader.SectionAlignment);
+			const __int64 aligned_headers = _section_align(static_cast<__int64>(_header_pe64->OptionalHeader.SizeOfHeaders), section_alignment);
+			if (!image_size_fits(aligned_headers))
+				return _reject_size();
+			_header_pe64->OptionalHeader.SizeOfHeaders = static_cast<DWORD>(aligned_headers);
+			SIZE_T required_space = static_cast<SIZE_T>(aligned_headers);
 			
 			for( int i = 0; i < _num_sections; i++ )
 			{
@@ -1755,7 +1900,9 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				}
 				
 				// Truncate VirtualSize to fit inside image size
-				if( this->_header_sections[i].Misc.VirtualSize + this->_header_sections[i].VirtualAddress > larger_image_size )
+				if( this->_header_sections[i].VirtualAddress > static_cast<SIZE_T>(larger_image_size) )
+					return _reject_size();
+				if( this->_header_sections[i].Misc.VirtualSize > static_cast<SIZE_T>(larger_image_size) - this->_header_sections[i].VirtualAddress )
 				{
 					char* location = new char[FILEPATH_SIZE + 1];
 					_stream->get_location(location, FILEPATH_SIZE + 1);
@@ -1775,7 +1922,11 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 				// Update the pointer to raw data to be correct
 				_header_sections[i].PointerToRawData = required_space;
 				
-				required_space = _section_align( required_space + _header_sections[i].SizeOfRawData, _header_pe64->OptionalHeader.FileAlignment );
+				const __int64 next_space = _section_align(static_cast<__int64>(required_space) + _header_sections[i].SizeOfRawData, section_alignment);
+				if (!image_size_fits(next_space) ||
+					!range_fits(static_cast<SIZE_T>(larger_image_size), _header_sections[i].VirtualAddress, _header_sections[i].SizeOfRawData))
+					return _reject_size();
+				required_space = static_cast<SIZE_T>(next_space);
 			}
 			
 			// Set the size of image
@@ -1823,24 +1974,20 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 							printf( "INFO: Packing down section %i.\n", i);
 
 						// Copy this section if the source and destination are both within acceptable bounds
-						if( _test_read( _disk_image, _disk_image_size,
-							_disk_image + (SIZE_T) _header_sections[i].PointerToRawData, _header_sections[i].SizeOfRawData ) &&
-							_test_read( larger_image, larger_image_size,
-							larger_image + (SIZE_T) _header_sections[i].VirtualAddress, _header_sections[i].SizeOfRawData ))
+						if( range_fits(_disk_image_size, _header_sections[i].PointerToRawData, _header_sections[i].SizeOfRawData) &&
+							range_fits(static_cast<SIZE_T>(larger_image_size), _header_sections[i].VirtualAddress, _header_sections[i].SizeOfRawData) )
 						{
 							memcpy( _disk_image + _header_sections[i].PointerToRawData, larger_image + _header_sections[i].VirtualAddress, _header_sections[i].SizeOfRawData );
 						}
 					}
 				}
 
-				delete [] larger_image;
 
 				if( _options->Verbose )
 					printf( "INFO: Done processing disk image.\n");
 
 				return true;
 			}
-			delete [] larger_image;	
 		}
 	}
 	return false;
@@ -1848,158 +1995,73 @@ bool pe_header::process_disk_image( export_list* exports, pe_hash_database* hash
 
 bool pe_header::process_import_directory( )
 {
-	if( this->_parsed_pe_32 )
-	{
-		// Test case for import reconstruction - destroy it :)
-		//_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = 0;
-		//_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = 0;
-
-		if( _header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress != 0 )
-		{
-			unsigned char* base_imports = _image + _header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-
-			// Count the number of IMAGE_IMPORT_DESCRIPTORs
-			_header_import_descriptors_count = 0;
-			bool more;
-			do
-			{
-				more = false;
-				if( _test_read( _image,_image_size, base_imports + _header_import_descriptors_count * sizeof(IMAGE_IMPORT_DESCRIPTOR ),
-					sizeof(IMAGE_IMPORT_DESCRIPTOR ) ) )
-				{
-					IMAGE_IMPORT_DESCRIPTOR* current = &((IMAGE_IMPORT_DESCRIPTOR*) base_imports)[_header_import_descriptors_count];
-					if( current->Characteristics != 0 || current->FirstThunk != 0 || current->ForwarderChain != 0 || current->Name != 0 )
-					{
-						more = true;
-						_header_import_descriptors_count++;
-					}
-				}
-			}while(more);
-
-			if( _options->Verbose )
-				printf("Found %i import descriptors.\n", _header_import_descriptors_count);
-
-			if( _header_import_descriptors_count > 0 )
-			{
-				// Load the IMAGE_IMPORT_DESCRIPTOR array
-				_header_import_descriptors = (IMAGE_IMPORT_DESCRIPTOR*) base_imports;
-
-				// Now process and fix the contents of each of these IMAGE_IMPORT_DESCRIPTORs. We assume the
-				// OriginalFirstThunk HintName array is valid.
-				// TODO: Upgrade this to assume OriginalFirstThunk array is invalid.
-				for( int i = 0; i < _header_import_descriptors_count; i++ )
-				{
-					int num_iat_entries = 0;
-					bool more;
-					do{
-						more = false;
-						if( _test_read( _image, _image_size, _image + _header_import_descriptors[i].FirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32), sizeof(_IMAGE_THUNK_DATA32) ) &&
-							_test_read( _image, _image_size, _image + _header_import_descriptors[i].OriginalFirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32), sizeof(_IMAGE_THUNK_DATA32) ) &&
-							*((DWORD*)(_image + _header_import_descriptors[i].FirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32))) != 0 &&
-							*((DWORD*)(_image + _header_import_descriptors[i].OriginalFirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32))) != 0)
-						{
-							memcpy( _image + _header_import_descriptors[i].FirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32),
-								_image + _header_import_descriptors[i].OriginalFirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32), sizeof(_IMAGE_THUNK_DATA32) );
-
-							more = true;
-							num_iat_entries++;
-						}
-						// TODO: Parse the import table information
-
-					}while(more);
-					
-					if( _options->Verbose )
-							printf("Reconstructed %i thunk data entries.\n", num_iat_entries);
-				}
-			}
-		}
+	_header_import_descriptors = NULL;
+	_header_import_descriptors_count = 0;
+	if ((!_parsed_pe_32 && !_parsed_pe_64) || _image == NULL)
+		return false;
+	const SIZE_T imports_rva = _parsed_pe_32 ?
+		_header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress :
+		_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+	if (imports_rva == 0)
 		return true;
-	}
-	else if( this->_parsed_pe_64 )
+	SIZE_T offset = imports_rva;
+	bool terminated = false;
+	while (range_fits(_image_size, offset, sizeof(IMAGE_IMPORT_DESCRIPTOR)))
 	{
-		// Test case for import reconstruction - destroy it :)
-		//_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = 0;
-		//_header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = 0;
-
-		if( _header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress != 0 )
+		const IMAGE_IMPORT_DESCRIPTOR* current = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(_image + offset);
+		if (current->Characteristics == 0 && current->FirstThunk == 0 &&
+			current->ForwarderChain == 0 && current->Name == 0)
 		{
-			unsigned char* base_imports = _image + _header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-
-			// Count the number of IMAGE_IMPORT_DESCRIPTORs
-			_header_import_descriptors_count = 0;
-			bool more;
-			do
-			{
-				more = false;
-				if( _test_read( _image,_image_size, base_imports + _header_import_descriptors_count * sizeof(IMAGE_IMPORT_DESCRIPTOR ),
-					sizeof(IMAGE_IMPORT_DESCRIPTOR ) ) )
-				{
-					IMAGE_IMPORT_DESCRIPTOR* current = &((IMAGE_IMPORT_DESCRIPTOR*) base_imports)[_header_import_descriptors_count];
-					if( current->Characteristics != 0 || current->FirstThunk != 0 || current->ForwarderChain != 0 || current->Name != 0 )
-					{
-						more = true;
-						_header_import_descriptors_count++;
-					}
-				}
-			}while(more);
-
-			if( _options->Verbose )
-				printf("Found %i import descriptors.\n", _header_import_descriptors_count);
-
-			if( _header_import_descriptors_count > 0 )
-			{
-				// Load the IMAGE_IMPORT_DESCRIPTOR array
-				_header_import_descriptors = (IMAGE_IMPORT_DESCRIPTOR*) base_imports;
-
-				// Now process and fix the contents of each of these IMAGE_IMPORT_DESCRIPTORs. We assume the
-				// OriginalFirstThunk HintName array is valid.
-				// TODO: Upgrade this to assume OriginalFirstThunk array is invalid.
-				for( int i = 0; i < _header_import_descriptors_count; i++ )
-				{
-					int num_iat_entries = 0;
-					bool more;
-					do{
-						more = false;
-						if( _test_read( _image, _image_size, _image + _header_import_descriptors[i].FirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32), sizeof(_IMAGE_THUNK_DATA32) ) &&
-							_test_read( _image, _image_size, _image + _header_import_descriptors[i].OriginalFirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32), sizeof(_IMAGE_THUNK_DATA32) ) &&
-							*((DWORD*)(_image + _header_import_descriptors[i].FirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32))) != 0 &&
-							*((DWORD*)(_image + _header_import_descriptors[i].OriginalFirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32))) != 0)
-						{
-							memcpy( _image + _header_import_descriptors[i].FirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32),
-								_image + _header_import_descriptors[i].OriginalFirstThunk + num_iat_entries*sizeof(_IMAGE_THUNK_DATA32), sizeof(_IMAGE_THUNK_DATA32) );
-
-							more = true;
-							num_iat_entries++;
-						}
-						// TODO: Parse the import table information
-
-					}while(more);
-					
-					if( _options->Verbose )
-							printf("Reconstructed %i thunk data entries.\n", num_iat_entries);
-				}
-			}
+			terminated = true;
+			break;
 		}
-		return true;
+		++_header_import_descriptors_count;
+		offset += sizeof(IMAGE_IMPORT_DESCRIPTOR);
 	}
-
-	return false;
+	if (!terminated)
+	{
+		_header_import_descriptors_count = 0;
+		return false;
+	}
+	if (_header_import_descriptors_count == 0)
+		return true;
+	_header_import_descriptors = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(_image + imports_rva);
+	for (int i = 0; i < _header_import_descriptors_count; ++i)
+	{
+		SIZE_T destination = _header_import_descriptors[i].FirstThunk;
+		SIZE_T source = _header_import_descriptors[i].OriginalFirstThunk;
+		// Preserve the existing DWORD-at-a-time reconstruction for both formats.
+		while (range_fits(_image_size, destination, sizeof(IMAGE_THUNK_DATA32)) &&
+			range_fits(_image_size, source, sizeof(IMAGE_THUNK_DATA32)))
+		{
+			if (*reinterpret_cast<DWORD*>(_image + destination) == 0 ||
+				*reinterpret_cast<DWORD*>(_image + source) == 0)
+				break;
+			memmove(_image + destination, _image + source, sizeof(IMAGE_THUNK_DATA32));
+			destination += sizeof(IMAGE_THUNK_DATA32);
+			source += sizeof(IMAGE_THUNK_DATA32);
+		}
+	}
+	return true;
 }
 
 bool pe_header::process_export_directory( )
 {
-	_header_import_descriptors_count = 0;
+	delete _export_list;
+	_export_list = NULL;
+	_header_export_directory = NULL;
 
 	if( (this->_parsed_pe_32 || this->_parsed_pe_64) && _image != NULL )
 	{
-		unsigned char* base_exports;
+		SIZE_T exports_rva;
 		if( _parsed_pe_32 )
-			base_exports = _image + _header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+			exports_rva = _header_pe32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
 		else
-			base_exports = _image + _header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+			exports_rva = _header_pe64->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
 		
-		if( _test_read( _image,_image_size, base_exports, sizeof(IMAGE_EXPORT_DIRECTORY ) ) )
+		if( exports_rva != 0 && range_fits(_image_size, exports_rva, sizeof(IMAGE_EXPORT_DIRECTORY)) )
 		{
+			unsigned char* base_exports = _image + exports_rva;
 			_header_export_directory = ((IMAGE_EXPORT_DIRECTORY*) base_exports);
 			
 			// Parse this export directory
@@ -2015,19 +2077,14 @@ bool pe_header::process_export_directory( )
 
 bool pe_header::_test_read( unsigned char* buffer, SIZE_T length, unsigned char* read_ptr, SIZE_T read_length )
 {
-	return read_ptr >= buffer && read_ptr + read_length <= buffer + length;
+	return test_read(buffer, length, read_ptr, read_length);
 }
 
 pe_header::~pe_header(void)
 {
 	if( this->_stream != NULL )
 		delete this->_stream;
-	if( this->_image_size != 0 )
-		delete[] _image;
-	if( this->_raw_header_size != 0 )
-		delete[] _raw_header;
-	if( this->_disk_image_size != 0 )
-		delete[] _disk_image;
+	_clear_header();
 	if( this->_name_filepath_long != 0 )
 		delete[] _name_filepath_long;
 	if( this->_name_filepath_short != 0 )
@@ -2045,16 +2102,21 @@ pe_header::~pe_header(void)
 
 DWORD pe_header::_section_align( DWORD address, DWORD alignment)
 {
-	// Round the address up to the nearest section alignment
-	if( alignment > 0 && address % alignment > 0 )
-		return (address - (address % alignment)) + alignment;
-	return address;
+	const __int64 result = _section_align(static_cast<__int64>(address), alignment);
+	return result < 0 ? 0 : static_cast<DWORD>(result);
 }
 
 __int64 pe_header::_section_align( __int64 address, DWORD alignment)
 {
-	// Round the address up to the nearest section alignment
-	if( address % alignment > 0 )
-		return (address - (address % alignment)) + alignment;
+	if (!image_size_fits(address) || alignment == 0 || alignment > MAX_PE_IMAGE_SIZE)
+		return -1;
+	const __int64 remainder = address % alignment;
+	if (remainder != 0)
+	{
+		const __int64 padding = alignment - remainder;
+		if (padding > MAX_PE_IMAGE_SIZE - address)
+			return -1;
+		return address + padding;
+	}
 	return address;
 }

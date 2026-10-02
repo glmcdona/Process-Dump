@@ -8,6 +8,7 @@ close_watcher::close_watcher(pe_hash_database* clean_db, PD_OPTIONS* options)
 	_options = options;
 	_monitoring_thread = NULL;
 	_monitor_request_stop = false;
+	_workers_stop = false;
 }
 
 bool close_watcher::start_monitor()
@@ -16,6 +17,7 @@ bool close_watcher::start_monitor()
 	if (_monitoring_thread == NULL)
 	{
 		_monitor_request_stop = false;
+		_workers_stop = false;
 		_monitoring_thread = new thread(&close_watcher::_monitor_dump_on_close, this);
 
 		printf("Started monitoring for process closes.\n");
@@ -58,7 +60,7 @@ void close_watcher::_monitor_dump_on_close()
 	// Hook all processes terminates
 	PROCESSENTRY32 entry;
 	entry.dwSize = sizeof(PROCESSENTRY32);
-	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
+	HANDLE snapshot = INVALID_HANDLE_VALUE;
 	DWORD myPid = GetCurrentProcessId();
 
 	while (!_monitor_request_stop)
@@ -120,12 +122,8 @@ void close_watcher::_monitor_dump_on_close()
 		Sleep(10);
 	}
 
-	// Wait for the work queue to finish processing
-	while (!_work_queue.empty())
-	{
-		printf("waiting for dump commands to be pulled from work queue...\n");
-		Sleep(200);
-	}
+	// Only stop consumers once the producer can no longer enqueue work.
+	_workers_stop = true;
 
 	// Wait for all worker threads to complete
 	for (int i = 0; i < _options->NumberOfThreads; i++)
@@ -148,7 +146,7 @@ void close_watcher::_dump_process_worker_and_close()
 {
 	// Dump this process
 	unordered_set<unsigned __int64> new_hashes;
-	while (!_monitor_request_stop || !_work_queue.empty())
+	while (!_workers_stop || !_work_queue.empty())
 	{
 		// Process the hashes for this process
 		dump_process* entry;
@@ -157,7 +155,8 @@ void close_watcher::_dump_process_worker_and_close()
 			// Process this process
 
 			// Dump this process
-			entry->monitor_close_dump_and_resume();
+			if (!entry->monitor_close_dump_and_resume())
+				fprintf(stderr, "WARNING: Could not complete close monitoring for PID 0x%x.\n", entry->get_pid());
 
 			// We're done with the process
 			delete entry;

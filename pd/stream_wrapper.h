@@ -1,529 +1,307 @@
 #pragma once
 
 #include <stdio.h>
+#include <stdint.h>
+#include <limits.h>
+#include <algorithm>
 #include "windows.h"
 #include "simple.h"
 #include <tlhelp32.h>
 #include "module_list.h"
 
-
-// A stream class that wraps reading from either a file or process memory offset.
 class stream_wrapper
 {
 public:
 	bool file_alignment;
-	virtual SIZE_T block_size( long offset ) = 0;
-	virtual bool read( long offset, SIZE_T size, unsigned char* output, SIZE_T* out_read ) = 0;
-	virtual SIZE_T get_short_name( char* out_name, SIZE_T out_name_size ) = 0;
-	virtual SIZE_T get_long_name( char* out_name, SIZE_T out_name_size ) = 0;
-	virtual SIZE_T get_location( char* out_name, SIZE_T out_name_size ) = 0;
+	virtual SIZE_T block_size(long offset) = 0;
+	virtual bool read(long offset, SIZE_T size, unsigned char* output, SIZE_T* out_read) = 0;
+	virtual SIZE_T get_short_name(char* out_name, SIZE_T out_name_size) = 0;
+	virtual SIZE_T get_long_name(char* out_name, SIZE_T out_name_size) = 0;
+	virtual SIZE_T get_location(char* out_name, SIZE_T out_name_size) = 0;
 	virtual __int64 get_address() = 0;
-	virtual __int64 estimate_section_size( long offset ) = 0;
-	virtual DWORD get_region_characteristics( long offset ) = 0;
+	virtual __int64 estimate_section_size(long offset) = 0;
+	virtual DWORD get_region_characteristics(long offset) = 0;
 	virtual ~stream_wrapper() {}
-	virtual void update_base( __int64 rva ) = 0;
+	virtual void update_base(__int64 rva) = 0;
 };
 
+inline SIZE_T copy_stream_name(const char* name, char* output, SIZE_T capacity)
+{
+	if (output == NULL || capacity == 0)
+		return 0;
+	output[0] = 0;
+	if (name == NULL)
+		return 0;
+	const SIZE_T length = (std::min<SIZE_T>)(strlen(name), capacity - 1);
+	memcpy(output, name, length);
+	output[length] = 0;
+	return length;
+}
 
-class file_stream : stream_wrapper
+class file_stream : public stream_wrapper
 {
 	char* _filename;
-
-	bool opened;
 	FILE* fh;
 public:
-
-	file_stream(char* filename)
+	file_stream(char* filename) : fh(NULL)
 	{
-		// Localize the filename
-		_filename = new char[ strlen(filename) + 1 ];
-		strcpy( _filename, filename );
-
-		// Set the input stream as a file
+		_filename = new char[strlen(filename) + 1];
+		strcpy(_filename, filename);
 		fh = fopen(filename, "rb");
 		file_alignment = true;
+		if (fh == NULL)
+			fprintf(stderr, "ERROR: Failed to open input file '%s'.\n", filename);
+	}
 
-		if( fh != NULL )
-			opened = true;
-		else
+	virtual void update_base(__int64) {}
+	virtual __int64 get_address() { return 0; }
+	virtual __int64 estimate_section_size(long) { return 0; }
+	virtual SIZE_T get_location(char* output, SIZE_T capacity) { return get_long_name(output, capacity); }
+	virtual SIZE_T get_long_name(char* output, SIZE_T capacity)
+	{
+		return copy_stream_name(_filename, output, capacity);
+	}
+	virtual SIZE_T get_short_name(char* output, SIZE_T capacity)
+	{
+		char fname[_MAX_FNAME] = {}, ext[_MAX_EXT] = {};
+		char name[_MAX_FNAME + _MAX_EXT + 1] = {};
+		if (_splitpath_s(_filename, NULL, 0, NULL, 0, fname, sizeof(fname), ext, sizeof(ext)) != 0)
 		{
-			PrintLastError(L"Failed to open file.");
-			opened = false;
+			fprintf(stderr, "ERROR: Input filename is too long.\n");
+			return copy_stream_name(NULL, output, capacity);
 		}
+		// Preserve the historical display name, including the extra dot before the extension.
+		sprintf_s(name, sizeof(name), "%s.%s", fname, ext);
+		return copy_stream_name(name, output, capacity);
 	}
-
-	virtual void update_base( __int64 rva )
+	virtual SIZE_T block_size(long offset)
 	{
-			// nothing
-	}
-
-	virtual __int64 get_address( )
-	{
-		return 0;
-	}
-
-	virtual __int64 estimate_section_size( long offset )
-	{
-		return 0;
-	}
-
-	virtual SIZE_T get_location( char* out_name, SIZE_T out_name_size )
-	{
-		return get_long_name( out_name, out_name_size );
-	}
-
-	virtual SIZE_T get_long_name( char* out_name, SIZE_T out_name_size )
-	{
-		// Return the path of this file on disk
-		SIZE_T length = strlen(_filename) + 1;
-		if( length > out_name_size )
-			length = out_name_size;
-		memcpy( out_name, _filename, length );
-		out_name[length-1] = 0;
-
-		return length - 1;
-	}
-
-	virtual SIZE_T get_short_name( char* out_name, SIZE_T out_name_size )
-	{
-		char fname[_MAX_FNAME];
-		char ext[_MAX_EXT];
-		char short_name[_MAX_FNAME + _MAX_EXT + 1];
-		_splitpath( _filename, NULL, NULL, fname, ext );
-		sprintf( short_name, "%s.%s", fname, ext );
-
-		SIZE_T length = strlen(short_name) + 1;
-		if( length > out_name_size )
-			length = out_name_size;
-		memcpy( out_name, short_name, length );
-		out_name[length-1] = 0;
-
-		return length - 1;
-	}
-
-
-	virtual SIZE_T block_size( long offset )
-	{
-		if( opened )
+		if (fh == NULL || offset < 0)
+			return 0;
+		if (_fseeki64(fh, 0, SEEK_END) != 0)
 		{
-			if( !fseek( fh, 0, SEEK_END) )
-				return ftell( fh ) - offset;
-			else
-				PrintLastError(L"Seek failed.");
+			fprintf(stderr, "ERROR: Failed to seek input file.\n");
+			return 0;
 		}
-		return 0;
+		const __int64 end = _ftelli64(fh);
+		if (end < offset)
+			return 0;
+		const unsigned __int64 remaining = static_cast<unsigned __int64>(end - offset);
+		return static_cast<SIZE_T>((std::min)(remaining, static_cast<unsigned __int64>(SIZE_MAX)));
 	}
-
-	virtual DWORD get_region_characteristics( long offset )
+	virtual DWORD get_region_characteristics(long)
 	{
 		return IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
 	}
-
-	virtual bool read( long offset, SIZE_T size, unsigned char* output, SIZE_T* out_read )
+	virtual bool read(long offset, SIZE_T size, unsigned char* output, SIZE_T* out_read)
 	{
+		if (out_read == NULL)
+			return false;
 		*out_read = 0;
-
-		if( opened )
-		{
-			if( !fseek( fh, offset, SEEK_SET) )
-			{
-				*out_read = fread( output, 1, size, fh );
-				if( *out_read == size )
-					return true;
-			}
-		}
-		return false;
+		if (fh == NULL || offset < 0 || (output == NULL && size != 0))
+			return false;
+		if (_fseeki64(fh, offset, SEEK_SET) != 0)
+			return false;
+		*out_read = fread(output, 1, size, fh);
+		return *out_read == size;
 	}
-
-	~file_stream(void)
+	~file_stream()
 	{
-		if( opened )
-			fclose( fh );
-		if( _filename != NULL )
-			delete[] _filename;
+		if (fh != NULL)
+			fclose(fh);
+		delete[] _filename;
 	}
+	file_stream(const file_stream&) = delete;
+	file_stream& operator=(const file_stream&) = delete;
 };
 
-
-
-class process_stream : stream_wrapper
+class process_stream : public stream_wrapper
 {
-	bool opened;
-	HANDLE ph;
+	bool opened = false;
+	bool owns_handle = false;
+	HANDLE ph = NULL;
+	char* _long_name = NULL;
+	char* _short_name = NULL;
 
-	char* _long_name;
-	char* _short_name;
-	
-	void init( HANDLE ph, void* base, module_list* modules )
+	void init(HANDLE handle, void* address, module_list* modules)
 	{
 		file_alignment = false;
-		this->ph = ph;
-		_long_name = NULL;
-		_short_name = NULL;
-		if( ph != NULL )
+		ph = handle;
+		base = address;
+		opened = handle != NULL && address != NULL;
+		if (!opened || modules == NULL)
+			return;
+		const auto item = modules->_modules.find(reinterpret_cast<uintptr_t>(base));
+		if (item != modules->_modules.end())
 		{
-			opened = true;
-			this->base = base;
-
-			// Copy this long and short name
-			unordered_map<unsigned __int64, module*>::const_iterator item = modules->_modules.find( (unsigned __int64) base );
-			if( item != modules->_modules.end() )
-			{
-				_long_name = new char[260];
-				_short_name = new char[256];
-				strcpy( _long_name, ((module*)item->second)->full_name );
-				strcpy( _short_name, ((module*)item->second)->short_name );
-			}
+			_long_name = new char[260];
+			_short_name = new char[256];
+			copy_stream_name(item->second->full_name, _long_name, 260);
+			copy_stream_name(item->second->short_name, _short_name, 256);
 		}
-		else
-			opened = false;
+	}
+
+	bool address_at(long offset, uintptr_t& address) const
+	{
+		const uintptr_t start = reinterpret_cast<uintptr_t>(base);
+		if (!opened || offset < 0 || static_cast<uintptr_t>(offset) > UINTPTR_MAX - start)
+			return false;
+		address = start + static_cast<uintptr_t>(offset);
+		return true;
+	}
+
+	bool query(long offset, MEMORY_BASIC_INFORMATION& region, uintptr_t& address)
+	{
+		return address_at(offset, address) &&
+			VirtualQueryEx(ph, reinterpret_cast<LPCVOID>(address), &region, sizeof(region)) == sizeof(region);
 	}
 
 public:
-	void* base;
+	void* base = NULL;
 
+	process_stream(HANDLE handle, void* address) { init(handle, address, NULL); }
+	process_stream(HANDLE handle, void* address, module_list* modules) { init(handle, address, modules); }
 
-	process_stream(HANDLE ph, void* base)
+	process_stream(DWORD pid, void* address, module_list* modules)
 	{
-		_long_name = NULL;
-		_short_name = NULL;
-		file_alignment = false;
-		this->ph = ph;
-		if( ph != NULL )
-		{
-			opened = true;
-			this->base = base;
-		}
-		else
-			opened = false;
-	}
-
-	process_stream(HANDLE ph, void* base, module_list* modules )
-	{
-		_long_name = NULL;
-		_short_name = NULL;
-		init( ph, base, modules );
+		owns_handle = true;
+		init(OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid), address, modules);
+		if (ph == NULL)
+			PrintLastError(L"Opening process stream");
 	}
 
 	process_stream(DWORD pid, module_list* modules)
 	{
-		_long_name = NULL;
-		_short_name = NULL;
-
-		// Try to open the specified process pid and use the main module as the base
 		file_alignment = false;
-		ph = OpenProcess( PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid);
-		opened = false;
-		
-		if( ph != NULL )
+		owns_handle = true;
+		ph = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+		if (ph == NULL)
 		{
-			HANDLE hSnapshot=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
-			if( hSnapshot != INVALID_HANDLE_VALUE )
-			{
-				MODULEENTRY32 tmpModule;
-				tmpModule.dwSize = sizeof(MODULEENTRY32);
-				if( Module32First(hSnapshot, &tmpModule) )
-				{
-					opened = true;
-					this->base = tmpModule.modBaseAddr;
-				}
-				CloseHandle( hSnapshot );				
+			PrintLastError(L"Opening process stream");
+			return;
+		}
+		HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
+		if (snapshot == INVALID_HANDLE_VALUE)
+		{
+			PrintLastError(L"Snapshotting process modules");
+			return;
+		}
+		MODULEENTRY32 entry = {};
+		entry.dwSize = sizeof(entry);
+		if (Module32First(snapshot, &entry))
+			init(ph, entry.modBaseAddr, modules);
+		else
+			PrintLastError(L"Reading first process module");
+		CloseHandle(snapshot);
+	}
 
-				init( ph, base, modules );
+	virtual SIZE_T get_location(char* output, SIZE_T capacity)
+	{
+		char name[19];
+		sprintf_s(name, sizeof(name), "0x%llX", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(base)));
+		return copy_stream_name(name, output, capacity);
+	}
+	virtual SIZE_T get_short_name(char* output, SIZE_T capacity)
+	{
+		return copy_stream_name(_short_name, output, capacity);
+	}
+	virtual SIZE_T get_long_name(char* output, SIZE_T capacity)
+	{
+		return copy_stream_name(_long_name, output, capacity);
+	}
+	virtual SIZE_T block_size(long offset)
+	{
+		MEMORY_BASIC_INFORMATION region = {};
+		uintptr_t address = 0;
+		if (!query(offset, region, address))
+			return 0;
+		const uintptr_t start = reinterpret_cast<uintptr_t>(region.BaseAddress);
+		if (address < start || address - start >= region.RegionSize)
+			return 0;
+		return region.RegionSize - (address - start);
+	}
+	virtual DWORD get_region_characteristics(long offset)
+	{
+		MEMORY_BASIC_INFORMATION region = {};
+		uintptr_t address = 0;
+		DWORD result = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
+		if (query(offset, region, address) && region.State == MEM_COMMIT &&
+			!(region.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+			(region.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+			result |= IMAGE_SCN_MEM_EXECUTE;
+		return result;
+	}
+	virtual __int64 estimate_section_size(long offset)
+	{
+		MEMORY_BASIC_INFORMATION region = {};
+		uintptr_t address = 0;
+		if (!query(offset, region, address) || region.State != MEM_COMMIT ||
+			(region.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+			return 0;
+		const uintptr_t start = reinterpret_cast<uintptr_t>(region.BaseAddress);
+		if (address < start || address - start >= region.RegionSize)
+			return 0;
+		return region.RegionSize - (address - start);
+	}
+	virtual void update_base(__int64 rva)
+	{
+		const uintptr_t address = reinterpret_cast<uintptr_t>(base);
+		const unsigned __int64 magnitude = rva < 0 ? static_cast<unsigned __int64>(-(rva + 1)) + 1 : rva;
+		if ((rva < 0 && magnitude > address) || (rva >= 0 && magnitude > UINTPTR_MAX - address))
+		{
+			fprintf(stderr, "ERROR: Process stream base adjustment is out of range.\n");
+			opened = false;
+			return;
+		}
+		base = reinterpret_cast<void*>(rva < 0 ? address - static_cast<uintptr_t>(magnitude) : address + static_cast<uintptr_t>(magnitude));
+	}
+	virtual __int64 get_address() { return reinterpret_cast<uintptr_t>(base); }
+
+	virtual bool read(long offset, SIZE_T size, unsigned char* output, SIZE_T* out_read)
+	{
+		if (out_read == NULL)
+			return false;
+		*out_read = 0;
+		uintptr_t address = 0;
+		if (!address_at(offset, address) || (output == NULL && size != 0) || size > UINTPTR_MAX - address)
+			return false;
+
+		SIZE_T processed = 0;
+		bool complete = true;
+		while (processed < size)
+		{
+			MEMORY_BASIC_INFORMATION region = {};
+			const uintptr_t current = address + processed;
+			if (VirtualQueryEx(ph, reinterpret_cast<LPCVOID>(current), &region, sizeof(region)) != sizeof(region))
+				return false;
+			const uintptr_t start = reinterpret_cast<uintptr_t>(region.BaseAddress);
+			if (current < start || current - start >= region.RegionSize)
+				return false;
+			const SIZE_T count = (std::min)(size - processed, region.RegionSize - (current - start));
+			if (region.State == MEM_COMMIT && !(region.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+			{
+				SIZE_T read = 0;
+				const BOOL success = ReadProcessMemory(ph, reinterpret_cast<LPCVOID>(current), output + processed, count, &read);
+				*out_read += read;
+				if (!success || read != count)
+					complete = false;
 			}
 			else
 			{
-				if( GetLastError() == 299 )
-					fprintf(stderr, "ERROR: Unable to open process PID 0x%x since it is a 64 bit process and this tool is running as a 32 bit process.\n", pid);
-				else
-					PrintLastError(L"create_process_stream CreateToolhelp32Snapshot");
+				// Preserve unreadable spans so the caller's zero-filled image stays sparse.
+				complete = false;
 			}
+			processed += count;
 		}
-		else
-		{
-			fprintf(stderr, "Failed to open process with PID 0x%x:\n", pid );
-			PrintLastError(L"\tcreate_process_stream");
-		}
+		return complete && *out_read == size;
 	}
-
-	process_stream(DWORD pid, void* base, module_list* modules )
+	~process_stream()
 	{
-		// Try to open the specified process pid
-		_long_name = NULL;
-		_short_name = NULL;
-		file_alignment = false;
-		opened = false;
-		ph = OpenProcess( PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid);
-		
-		if( ph != NULL )
-		{
-			init( ph, base, modules );
-		}
-		else
-		{
-			fprintf(stderr, "Failed to open process with PID 0x%x:\n", pid );
-			PrintLastError(L"\tcreate_process_stream");
-		}
+		if (owns_handle && ph != NULL)
+			CloseHandle(ph);
+		delete[] _long_name;
+		delete[] _short_name;
 	}
-
-	virtual SIZE_T get_location( char* out_name, SIZE_T out_name_size )
-	{
-		char* hex = new char[16 + 2 + 1]; // Max space required
-		int hexLength = sprintf( hex, "0x%llX", (__int64) this->base );
-
-		if( hexLength < out_name_size )
-		{
-			memcpy( out_name, hex, hexLength );
-			out_name[hexLength] = 0;
-			delete[] hex;
-			return hexLength;
-		}
-		delete[] hex;
-		return 0;
-	}
-
-	virtual SIZE_T get_short_name( char* out_name, SIZE_T out_name_size )
-	{
-		if( _short_name != NULL )
-		{
-			SIZE_T length = strlen( _short_name ) + 1;
-			if( length > out_name_size )
-				length = out_name_size;
-			memcpy( out_name, _short_name, length );
-			out_name[length-1] = 0;
-
-			return length;
-		}
-		return 0;
-	}
-
-	virtual SIZE_T get_long_name( char* out_name, SIZE_T out_name_size )
-	{
-		if( _long_name != NULL )
-		{
-			SIZE_T length = strlen( _long_name ) + 1;
-			if( length > out_name_size )
-				length = out_name_size;
-			memcpy( out_name, _long_name, length );
-			out_name[length-1] = 0;
-
-			return length;
-		}
-
-		return 0;
-	}
-
-	virtual SIZE_T block_size( long offset )
-	{
-		if( opened )
-		{
-			_MEMORY_BASIC_INFORMATION64 mbi;
-			__int64 blockSize = VirtualQueryEx(ph, (LPCVOID) ((unsigned char*)base + (SIZE_T)offset), (PMEMORY_BASIC_INFORMATION) &mbi, sizeof(_MEMORY_BASIC_INFORMATION64));
-
-			if( blockSize == sizeof(_MEMORY_BASIC_INFORMATION64) )
-			{
-				return mbi.RegionSize - offset;
-			}
-			else if(  blockSize == sizeof(_MEMORY_BASIC_INFORMATION32) )
-			{
-				_MEMORY_BASIC_INFORMATION32* mbi32 = (_MEMORY_BASIC_INFORMATION32*) &mbi;
-				return mbi32->RegionSize - offset;
-			}
-			else if( blockSize == 0 )
-			{
-				PrintLastError(L"VirtualQueryEx query block size");
-			}
-		}
-		return 0;
-	}
-
-	virtual DWORD get_region_characteristics( long offset )
-	{
-		DWORD characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
-		if( opened )
-		{
-			_MEMORY_BASIC_INFORMATION64 mbi;
-			__int64 blockSize = VirtualQueryEx(ph, (LPCVOID) ((unsigned char*)base + (SIZE_T)offset), (_MEMORY_BASIC_INFORMATION*) &mbi, sizeof(_MEMORY_BASIC_INFORMATION64));
-
-			if( blockSize == sizeof(_MEMORY_BASIC_INFORMATION64) )
-			{
-				if( mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) )
-				{
-					if( mbi.AllocationProtect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE  ) )
-						characteristics |= IMAGE_SCN_MEM_EXECUTE;
-				}
-			}
-			else if(  blockSize == sizeof(_MEMORY_BASIC_INFORMATION32) )
-			{
-				_MEMORY_BASIC_INFORMATION32* mbi32 = (_MEMORY_BASIC_INFORMATION32*) &mbi;
-				if( mbi32->State == MEM_COMMIT && !(mbi32->Protect & (PAGE_NOACCESS | PAGE_GUARD)) )
-				{
-					if( mbi32->AllocationProtect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE  ) )
-						characteristics |= IMAGE_SCN_MEM_EXECUTE;
-				}
-			}
-		}
-		
-		return characteristics;
-	}
-
-	virtual __int64 estimate_section_size( long offset )
-	{
-		// Estimate the section size according to the heap size and privilege level
-		if( opened )
-		{
-			_MEMORY_BASIC_INFORMATION64 mbi;
-			__int64 blockSize = VirtualQueryEx(ph, (LPCVOID) ((unsigned char*)base + (SIZE_T)offset), (_MEMORY_BASIC_INFORMATION*) &mbi, sizeof(_MEMORY_BASIC_INFORMATION64));
-
-			if( blockSize == sizeof(_MEMORY_BASIC_INFORMATION64) )
-			{
-				if( mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) )
-				{
-					// Good region
-					return mbi.RegionSize;
-				}
-			}
-			else if(  blockSize == sizeof(_MEMORY_BASIC_INFORMATION32) )
-			{
-				_MEMORY_BASIC_INFORMATION32* mbi32 = (_MEMORY_BASIC_INFORMATION32*) &mbi;
-				if( mbi32->State == MEM_COMMIT && !(mbi32->Protect & (PAGE_NOACCESS | PAGE_GUARD)) )
-				{
-					return mbi32->RegionSize;
-				}
-			}
-		}
-		
-		return 0; // Not valid
-	}
-
-	virtual void update_base( __int64 rva )
-	{
-		this->base = (void*) ((__int64)base + rva);
-	}
-
-	virtual __int64 get_address( )
-	{
-		return (__int64) this->base;
-	}
-
-	virtual bool read( long offset, SIZE_T size, unsigned char* output, SIZE_T* out_read )
-	{
-		// Reads in memory by region. Skips noaccess, guard, and failures leaving the corresponding
-		// parts of the output buffer untouched.
-		*out_read = 0;
-
-		SIZE_T num_read = 0;
-
-		__int64 already_read = 0;
-
-		if( opened )
-		{
-			while( already_read < size )
-			{
-				_MEMORY_BASIC_INFORMATION64 mbi;
-				__int64 blockSize = VirtualQueryEx(ph, (LPCVOID) ((unsigned char*)base + (SIZE_T)offset + (SIZE_T)already_read), (_MEMORY_BASIC_INFORMATION*) &mbi, sizeof(_MEMORY_BASIC_INFORMATION64));
-				__int64 start_address = already_read + (__int64)base + offset;
-
-				if( blockSize == sizeof(_MEMORY_BASIC_INFORMATION64) )
-				{
-					if( mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) )
-					{
-						// Read in this whole or part of this region
-						bool success;
-						if( start_address + size - already_read >= mbi.BaseAddress + mbi.RegionSize )
-						{
-							// Read in the whole region
-							success = ReadProcessMemory( ph,
-																(LPCVOID) (start_address),
-																(void*)((__int64) output + already_read),
-																mbi.RegionSize,
-																&num_read);
-							already_read += mbi.RegionSize;
-							*out_read += num_read;
-						}
-						else
-						{
-							// Read in the partial region
-							success = ReadProcessMemory( ph,
-																	(LPCVOID) (start_address),
-																	(void*)((__int64) output + already_read),
-																	size - already_read,
-																	&num_read);
-								already_read += size - already_read;
-								*out_read += num_read;
-						}
-					}
-					else
-					{
-						// Guard or noaccess, skip this region
-						already_read += mbi.RegionSize - (start_address - mbi.BaseAddress);
-					}
-				}
-				else if(  blockSize == sizeof(_MEMORY_BASIC_INFORMATION32) )
-				{
-					_MEMORY_BASIC_INFORMATION32* mbi32 = (_MEMORY_BASIC_INFORMATION32*) &mbi;
-					if( mbi32->State == MEM_COMMIT && !(mbi32->Protect & (PAGE_NOACCESS | PAGE_GUARD)) )
-					{
-						// Read in this whole or part of this region
-						bool success;
-
-						if( start_address + size - already_read >= mbi32->BaseAddress + mbi32->RegionSize )
-						{
-							// Read in the whole region
-							success = ReadProcessMemory( ph,
-																(LPCVOID) (start_address),
-																(void*)((__int64) output + already_read),
-																mbi32->RegionSize,
-																&num_read);
-							already_read += mbi32->RegionSize;
-							*out_read += num_read;
-						}
-						else
-						{
-							// Read in the partial region
-							success = ReadProcessMemory( ph,
-																	(LPCVOID) (start_address),
-																	(void*)((__int64) output + already_read),
-																	size - already_read,
-																	&num_read);
-								already_read += size - already_read;
-								*out_read += num_read;
-						}
-					}
-					else
-					{
-						// Guard or noaccess, skip this region
-						already_read += mbi32->RegionSize - (start_address - mbi32->BaseAddress);
-					}
-				}
-				else
-				{
-					// Failed to query MBI information, best we can do is skip 1 page?
-					already_read += 0x1000;
-				}
-			}
-		}
-
-		if( *out_read != already_read )
-			return false;
-		return true;
-	}
-
-	~process_stream(void)
-	{
-		if( opened )
-		{
-			// Close the handle
-			//CloseHandle( ph ); SHOULD NOT DO THIS. USED BY CREATOR.
-
-			if( _long_name != NULL )
-				delete[] _long_name;
-			if( _short_name != NULL )
-				delete[] _short_name;
-		}
-		
-	}
+	process_stream(const process_stream&) = delete;
+	process_stream& operator=(const process_stream&) = delete;
 };
-
-
-

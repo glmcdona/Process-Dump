@@ -59,6 +59,12 @@
     <ClInclude Include="dump_process.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="dump_output.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="dump_path.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="DynArray.h">
       <Filter>Header Files</Filter>
     </ClInclude>

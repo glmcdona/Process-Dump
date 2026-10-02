@@ -49,6 +49,7 @@ class dump_process
 	bool _quieter; // Suppress some of the error and warning messages
 
 	MBI_BASIC_INFO get_mbi_info(unsigned __int64 address);
+	bool write_dump(pe_header* header, unsigned __int64 base, DWORD pid);
 
 public:
 	dump_process(DWORD pid, pe_hash_database* db, PD_OPTIONS* options, bool quieter);

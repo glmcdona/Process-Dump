@@ -1,6 +1,7 @@
 #pragma once
 #include "work_queue.h"
 #include <thread>
+#include <atomic>
 #include "pe_hash_database.h"
 #include "dump_process.h"
 #include "windows.h"
@@ -13,7 +14,8 @@ class close_watcher
 	Queue<dump_process*> _work_queue;
 
 	thread* _monitoring_thread;
-	bool _monitor_request_stop;
+	std::atomic<bool> _monitor_request_stop;
+	std::atomic<bool> _workers_stop;
 
 	void _monitor_dump_on_close();
 	void _dump_process_worker_and_close();
@@ -24,4 +26,3 @@ public:
 	bool stop_monitor();
 	~close_watcher();
 };
-
