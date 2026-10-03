@@ -676,8 +676,8 @@ Examples (create the output directory first):
   pd.exe -closemon -o C:\dumps
 
 Images/reconstructions above 256 MiB are rejected. Captures are live, non-atomic,
-and may contain sensitive data; keep output private. See README.md for benchmark
-commands, recovery accuracy, reexecution caveats and output safety details.
+and may contain sensitive data; keep output private. See README.md for usage
+examples and command-line options.
 )help", stdout);
 		return 0;
 	}
