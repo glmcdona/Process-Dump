@@ -9,7 +9,7 @@ on:
         required: true
       version:
         type: string
-        description: Release version (for example v2.2)
+        description: Release version (for example v3.0.0)
         required: true
 
 permissions:
@@ -35,16 +35,23 @@ jobs:
     needs: build
     runs-on: windows-2022
     permissions:
+      actions: read
       contents: write
+    concurrency:
+      group: publish-${{ inputs.version }}
+      cancel-in-progress: false
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          name: Win32 Executable
-          path: binaries\Win32
-      - uses: actions/download-artifact@v4
-        with:
-          name: x64 Executable
-          path: binaries\x64
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Prepare allowlisted artifact bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
+        run: python -I .github\scripts\release_artifacts.py
       - name: Publish tested binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,7 +59,5 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_COMMIT: ${{ inputs.commit }}
         run: |
-          Move-Item binaries\Win32\pd.exe pd32.exe
-          Move-Item binaries\x64\pd.exe pd64.exe
-          gh release create $env:RELEASE_VERSION pd32.exe pd64.exe --target $env:RELEASE_COMMIT --title $env:RELEASE_VERSION --generate-notes
+          gh release create $env:RELEASE_VERSION release-binaries\pd32.exe release-binaries\pd64.exe release-binaries\provenance.json --target $env:RELEASE_COMMIT --title $env:RELEASE_VERSION --generate-notes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

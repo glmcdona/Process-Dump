@@ -248,7 +248,7 @@
       <ControlFlowGuard>Guard</ControlFlowGuard>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>Psapi.lib;Advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Psapi.lib;Advapi32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <RandomizedBaseAddress>true</RandomizedBaseAddress>
       <DataExecutionPrevention>true</DataExecutionPrevention>
       <ControlFlowGuard>Guard</ControlFlowGuard>
@@ -295,6 +295,7 @@
     </ClInclude>
     <ClInclude Include="pe_imports.h" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="version.h" />
     <ClInclude Include="simple.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="stream_wrapper.h">
@@ -305,6 +306,9 @@
     <ClInclude Include="terminate_monitor_hook.h" />
     <ClInclude Include="utils.h" />
     <ClInclude Include="work_queue.h" />
+    <ClInclude Include="work_pool.h" />
+    <ClInclude Include="module_work.h" />
+    <ClInclude Include="system_work.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="pd.rc" />

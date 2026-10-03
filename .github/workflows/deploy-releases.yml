@@ -14,23 +14,28 @@ jobs:
     needs: build
     runs-on: windows-2022
     permissions:
+      actions: read
       contents: write
+    concurrency:
+      group: publish-${{ github.ref_name }}
+      cancel-in-progress: false
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          name: Win32 Executable
-          path: binaries\Win32
-      - uses: actions/download-artifact@v4
-        with:
-          name: x64 Executable
-          path: binaries\x64
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Prepare allowlisted artifact bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: python -I .github\scripts\release_artifacts.py
       - name: Publish tested release binaries
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_VERSION: ${{ github.ref_name }}
         run: |
-          Move-Item binaries\Win32\pd.exe pd32.exe
-          Move-Item binaries\x64\pd.exe pd64.exe
-          gh release create $env:RELEASE_VERSION pd32.exe pd64.exe --verify-tag --title $env:RELEASE_VERSION --generate-notes
+          gh release create $env:RELEASE_VERSION release-binaries\pd32.exe release-binaries\pd64.exe release-binaries\provenance.json --verify-tag --title $env:RELEASE_VERSION --generate-notes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

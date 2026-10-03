@@ -160,15 +160,35 @@ bool pe_hash_database::clear_database()
 	_clean_hashes.clear();
 	_ep_hashes.clear();
 	_epshort_hashes.clear();
+	_entrypoint_snapshot.reset();
 	LeaveCriticalSection( &_lock );
 	return true;
 }
 
-bool pe_hash_database::add_hashes(unordered_set<unsigned __int64> hashes)
+std::shared_ptr<const pe_hash_database::entrypoint_hashes> pe_hash_database::snapshot_entrypoints()
+{
+	EnterCriticalSection(&_lock);
+	std::unique_ptr<CRITICAL_SECTION, decltype(&LeaveCriticalSection)> release(&_lock, LeaveCriticalSection);
+	if (!_entrypoint_snapshot)
+	{
+		auto result = std::make_shared<entrypoint_hashes>();
+		result->full.insert(_ep_hashes.begin(), _ep_hashes.end());
+		result->short_hashes.insert(_epshort_hashes.begin(), _epshort_hashes.end());
+		for (auto hash : result->short_hashes)
+		{
+			result->minimum = (std::min)(result->minimum, hash);
+			result->maximum = (std::max)(result->maximum, hash);
+		}
+		_entrypoint_snapshot = std::move(result);
+	}
+	return _entrypoint_snapshot;
+}
+
+bool pe_hash_database::add_hashes(const unordered_set<unsigned __int64>& hashes)
 {
 	EnterCriticalSection( &_lock );
 
-	for (unordered_set<unsigned __int64>::iterator it=hashes.begin(); it!=hashes.end(); it++)
+	for (auto it=hashes.begin(); it!=hashes.end(); it++)
 	{
 		if( *it != 0 && _clean_hashes.count( *it ) == 0 )
 		{
@@ -182,23 +202,25 @@ bool pe_hash_database::add_hashes(unordered_set<unsigned __int64> hashes)
 }
 
 
-bool pe_hash_database::add_hashes_eps(unordered_set<unsigned __int64> hashes, unordered_set<unsigned __int64> hashes_short)
+bool pe_hash_database::add_hashes_eps(const unordered_set<unsigned __int64>& hashes, const unordered_set<unsigned __int64>& hashes_short)
 {
 	EnterCriticalSection(&_lock);
 
-	for (unordered_set<unsigned __int64>::iterator it = hashes.begin(); it != hashes.end(); it++)
+	for (auto it = hashes.begin(); it != hashes.end(); it++)
 	{
 		if (*it != 0 && _ep_hashes.count(*it) == 0)
 		{
 			_ep_hashes.insert(*it);
+			_entrypoint_snapshot.reset();
 		}
 	}
 
-	for (unordered_set<unsigned __int64>::iterator it = hashes_short.begin(); it != hashes_short.end(); it++)
+	for (auto it = hashes_short.begin(); it != hashes_short.end(); it++)
 	{
 		if (*it != 0 && _epshort_hashes.count(*it) == 0)
 		{
 			_epshort_hashes.insert(*it);
+			_entrypoint_snapshot.reset();
 		}
 	}
 
@@ -208,7 +230,16 @@ bool pe_hash_database::add_hashes_eps(unordered_set<unsigned __int64> hashes, un
 }
 	
 
-bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursively )
+bool pe_hash_database::add_folder(char* dir_name, WCHAR* filter, bool recursively, int threads)
+{
+	work_pool pool(threads);
+	size_t queued = 0;
+	const bool result = _add_folder(dir_name, filter, recursively, pool, queued);
+	pool.wait();
+	return result;
+}
+
+bool pe_hash_database::_add_folder(char* dir_name, WCHAR* filter, bool recursively, work_pool& pool, size_t& queued)
 {
 	// Expand the environment names in the directory
 	char dir_name_expanded[PATH_MAX + 1];
@@ -242,7 +273,7 @@ bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursive
 								char* directory = new char[strlen(dir_name_expanded) + strlen(ent->d_name) + 2];
 								sprintf_s(directory, strlen(dir_name_expanded) + strlen(ent->d_name) + 2, "%s\\%s", dir_name_expanded, ent->d_name);
 
-								add_folder(directory, filter, recursively);
+								_add_folder(directory, filter, recursively, pool, queued);
 
 								// Cleanup
 								delete[] directory;
@@ -258,23 +289,24 @@ bool pe_hash_database::add_folder( char* dir_name, WCHAR* filter, bool recursive
 								filename[length] = 0;
 								sprintf(filename, "%s\\%S", dir_name_expanded, result);
 
-								// Processes the specified file
-								FILE* fh = fopen(filename, "rb");
-								if (fh != NULL)
-								{
-									if (_is_mz(fh))
+								const std::string path(filename);
+								pool.submit([this, path] {
+									FILE* fh = fopen(path.c_str(), "rb");
+									if (fh != NULL)
 									{
+										const bool pe = _is_mz(fh);
 										fclose(fh);
-
-										add_file(filename);
+										if (pe)
+										{
+											auto mutable_path = path;
+											add_file(&mutable_path[0]);
+										}
 									}
 									else
-										fclose(fh);
-								}
-								else {
-									// Error
-									fprintf(stderr, "Error opening file %s: %s.\n", filename, strerror(errno));
-								}
+										fprintf(stderr, "Error opening file %s: %s.\n", path.c_str(), strerror(errno));
+								});
+								if (++queued % 256 == 0)
+									pool.wait();
 								delete[] filename;
 							}
 						}
@@ -381,17 +413,26 @@ bool pe_hash_database::remove_folder( char* dir_name, WCHAR* filter, bool recurs
 
 bool pe_hash_database::contains(unsigned __int64 hash)
 {
-	return _clean_hashes.count( hash ) != 0;
+	EnterCriticalSection(&_lock);
+	const bool found = _clean_hashes.count(hash) != 0;
+	LeaveCriticalSection(&_lock);
+	return found;
 }
 
 bool pe_hash_database::contains_ep(unsigned __int64 hash)
 {
-	return _ep_hashes.count(hash) != 0;
+	EnterCriticalSection(&_lock);
+	const bool found = _ep_hashes.count(hash) != 0;
+	LeaveCriticalSection(&_lock);
+	return found;
 }
 
 bool pe_hash_database::contains_epshort(unsigned __int64 hash)
 {
-	return _epshort_hashes.count(hash) != 0;
+	EnterCriticalSection(&_lock);
+	const bool found = _epshort_hashes.count(hash) != 0;
+	LeaveCriticalSection(&_lock);
+	return found;
 }
 
 bool pe_hash_database::add_file(char* file)
@@ -430,6 +471,7 @@ bool pe_hash_database::add_file(char* file)
 		if (_ep_hashes.count(hash_ep) == 0)
 		{
 			_ep_hashes.insert(hash_ep);
+			_entrypoint_snapshot.reset();
 			printf("...new entrypoint hash %s,0x%llX\n", file, hash_ep);
 		}
 		LeaveCriticalSection(&_lock);
@@ -442,6 +484,7 @@ bool pe_hash_database::add_file(char* file)
 		if (_epshort_hashes.count(hash_ep_short) == 0)
 		{
 			_epshort_hashes.insert(hash_ep_short);
+			_entrypoint_snapshot.reset();
 			printf("...new entrypoint short hash %s,0x%llX\n", file, hash_ep_short);
 		}
 		LeaveCriticalSection(&_lock);
@@ -576,6 +619,7 @@ bool pe_hash_database::save()
 pe_hash_database::~pe_hash_database(void)
 {
 	delete[] _clean_database_path;
+	delete[] _ep_database_path;
+	delete[] _epshort_database_path;
 	DeleteCriticalSection(&_lock);
 }
-

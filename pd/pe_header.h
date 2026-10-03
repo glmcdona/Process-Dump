@@ -24,9 +24,6 @@ using namespace std::tr1;
 #define EP_HASH_OPCODES_MIN 30
 #define EP_HASH_OPCODES_MAX 100
 
-// 10MB
-#define MAX_SECTION_SIZE (1024 * 1000) * 60
-
 class pe_hash_database;
 
 static bool static_zero_init = false;
@@ -48,6 +45,7 @@ struct IMPORT_SUMMARY
 
 class pe_header
 {
+	friend struct entrypoint_benchmark;
 	
 	unsigned __int64 _unique_hash;
 	unsigned __int64 _unique_hash_ep;
@@ -106,6 +104,13 @@ class pe_header
 	void _clear_images();
 	void _clear_header();
 	bool _reject_size();
+	bool _append_import_section(DWORD rva, DWORD size);
+	bool _pack_disk_image(const unsigned char* image, SIZE_T size, SIZE_T cookie_rva);
+	bool _writable_data_range(SIZE_T rva, SIZE_T width) const;
+	bool _reexecution_import_ranges(std::vector<std::pair<SIZE_T, SIZE_T>>& ranges) const;
+	bool _reexecution_cookie_rva(SIZE_T& rva) const;
+	bool _executable_range(SIZE_T rva, SIZE_T length) const;
+	void _recover_entrypoint(pe_hash_database* database);
 	
 	unsigned __int64 _hash_asm(SIZE_T offset);
 	unsigned __int64 _hash_short_asm(SIZE_T offset);

@@ -1,6 +1,7 @@
 // Microsoft Visual C++ generated resource script.
 //
 #include "resource.h"
+#include "version.h"
 
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////
@@ -51,8 +52,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,2,0,0
- PRODUCTVERSION 2,2,0,0
+ FILEVERSION PD_VERSION_RESOURCE
+ PRODUCTVERSION PD_VERSION_RESOURCE
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -69,12 +70,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Geoff McDonald"
             VALUE "FileDescription", "Process Dump. https://github.com/glmcdona/Process-Dump"
-            VALUE "FileVersion", "2.2.0.0"
+            VALUE "FileVersion", PD_VERSION_STRING ".0"
             VALUE "InternalName", "pd.exe"
             VALUE "LegalCopyright", "Copyright (C) 2022"
             VALUE "OriginalFilename", "pd.exe"
             VALUE "ProductName", "Process Dump"
-            VALUE "ProductVersion", "2.2.0.0"
+            VALUE "ProductVersion", PD_VERSION_STRING ".0"
         END
     END
     BLOCK "VarFileInfo"
@@ -97,4 +98,3 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED
-

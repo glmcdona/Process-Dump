@@ -60,13 +60,13 @@ static void pe_roundtrip(bool win64, bool imports)
 	std::vector<unsigned char> bytes = output.read();
 	require(bytes.size() >= 0x2000, "dump truncated");
 	require(bytes[0] == 'M' && bytes[1] == 'Z' && bytes[0x1000] == 0x90, "dump data changed");
-	const DWORD expected_crc = imports ? (win64 ? 0x11056f9c : 0xd6ca78d0) : (win64 ? 0x0f6a2ed3 : 0xfd941dbd);
-	require(bytes.size() == (imports ? 12288 : 8192), "baseline dump size changed");
-	require(crc32buf(reinterpret_cast<char*>(bytes.data()), bytes.size()) == expected_crc, "baseline dump bytes changed");
-	require(header.get_hash() == (imports ? 0xcd4757e79d476f71ULL : 0xcd8757e79d476f71ULL), "baseline PE hash changed");
 	printf("FINGERPRINT PE%s imports=%d size=%zu crc=%08lx hash=%016llx\n",
 		win64 ? "64" : "32", imports, bytes.size(),
 		crc32buf(reinterpret_cast<char*>(bytes.data()), bytes.size()), header.get_hash());
+	const DWORD expected_crc = imports ? (win64 ? 0x64a456d2 : 0xd9e601a9) : (win64 ? 0x0f6a2ed3 : 0xfd941dbd);
+	require(bytes.size() == (imports ? 12288 : 8192), "baseline dump size changed");
+	require(crc32buf(reinterpret_cast<char*>(bytes.data()), bytes.size()) == expected_crc, "baseline dump bytes changed");
+	require(header.get_hash() == (imports ? 0x391c57a138fafe6cULL : 0xcd8757e79d476f71ULL), "baseline PE hash changed");
 }
 
 static void import_table_roundtrip(bool win64)
@@ -132,6 +132,18 @@ int main(int argc, char** argv)
 	_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
 #endif
 	setvbuf(stdout, NULL, _IONBF, 0);
+	if (argc > 1 && strcmp(argv[1], "--benchmark") == 0)
+		return run_performance_benchmark(argc - 2, argv + 2);
+	if (argc > 1 && strcmp(argv[1], "--reexecute") == 0)
+		return run_reexecution_probe(argc - 2, argv + 2);
+	if (argc == 2 && strcmp(argv[1], "--reexecution-fixture") == 0)
+		return run_reexecution_fixture();
+	if (argc > 1 && strcmp(argv[1], "--entrypoint-corpus") == 0)
+		return run_entrypoint_benchmark(argc - 2, argv + 2);
+	if (argc == 2 && strcmp(argv[1], "--system-fixture") == 0)
+		return run_system_fixture();
+	if (argc > 1 && strcmp(argv[1], "--system-work") == 0)
+		return run_system_benchmark(argc - 2, argv + 2);
 	std::vector<test_case> tests = {
 		{"crc-vectors", crc_vectors}, {"file-stream", file_stream_roundtrip},
 		{"process-stream", process_stream_roundtrip},
@@ -153,6 +165,12 @@ int main(int argc, char** argv)
 		append_name_safety_tests(tests);
 		append_hook_tests(tests);
 		append_output_tests(tests);
+		append_reconstruction_tests(tests);
+		append_pipeline_tests(tests);
+		append_performance_tests(tests);
+		append_reexecution_tests(tests);
+		append_scheduling_tests(tests);
+		append_entrypoint_tests(tests);
 	}
 	int failures = 0, count = 0;
 	for (const auto& test : tests)

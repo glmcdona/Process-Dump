@@ -12,6 +12,7 @@
 #include "hash.h"
 #include <set>
 #include "terminate_monitor_hook.h"
+#include "work_pool.h"
 
 #define PAGE_SIZE 0x1000
 #define CODECHUNK_HEADER_HASH_SIZE 0x200 // First X bytes are CRC32'd of each loose code chunk. Only unique CRC32s are processed deeply.
@@ -50,16 +51,17 @@ class dump_process
 
 	MBI_BASIC_INFO get_mbi_info(unsigned __int64 address);
 	bool write_dump(pe_header* header, unsigned __int64 base, DWORD pid);
+	std::vector<unsigned __int64> scan_regions(set<unsigned __int64>& executable_heaps);
 
 public:
 	dump_process(DWORD pid, pe_hash_database* db, PD_OPTIONS* options, bool quieter);
-	void dump_all();
+	void dump_all(work_pool* pool = NULL);
 	void dump_region(__int64 base);
 	void dump_header(pe_header* header, __int64 base, DWORD pid);
 	DWORD get_pid() { return _pid; };
-	bool build_export_list();
+	bool build_export_list(work_pool* pool = NULL);
 	bool build_export_list(export_list* result, char* library, module_list* modules);
-	int get_all_hashes(unordered_set<unsigned __int64>* output_hashes, unordered_set<unsigned __int64>* output_hashes_eps, unordered_set<unsigned __int64>* output_hashes_ep_shorts);
+	int get_all_hashes(unordered_set<unsigned __int64>* output_hashes, unordered_set<unsigned __int64>* output_hashes_eps, unordered_set<unsigned __int64>* output_hashes_ep_shorts, work_pool* pool = NULL);
 	unsigned __int64 hash_codechunk_header(__int64 base);
 	bool is64();
 	bool get_process_name(char* process_name, SIZE_T byte_length);

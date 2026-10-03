@@ -11,20 +11,18 @@ module_list::module_list( DWORD pid )
 {
 	#if defined(_WIN64)
 	// List modules on a 64 bit machine. A 64 bit machine is assumed to be Windows Vista+
-	HMODULE hMods[2048];
-	DWORD cbNeeded;
-    unsigned int i;
+	std::vector<HMODULE> hMods;
 	HANDLE ph = OpenProcess( PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
                             FALSE, pid );
 	if( ph != NULL )
 	{
-		if( EnumProcessModulesEx(ph, hMods, sizeof(hMods), &cbNeeded, LIST_MODULES_ALL))
+		if (module_snapshot::read(ph, hMods))
 		{
-			for ( i = 0; i < (cbNeeded / sizeof(HMODULE)); i++ )
+			for (HMODULE handle : hMods)
 			{
 				// Query the module basic information
 				MODULEINFO info;
-				if( GetModuleInformation( ph, hMods[i], &info, sizeof(MODULEINFO) ) )
+				if( GetModuleInformation( ph, handle, &info, sizeof(MODULEINFO) ) )
 				{
 					// Check if this base address is already occupied
 					unordered_map<unsigned __int64, module*>::const_iterator item = _modules.find( (unsigned __int64) info.lpBaseOfDll );
@@ -32,7 +30,7 @@ module_list::module_list( DWORD pid )
 					if( item == _modules.end() )
 					{
 						// Add this module
-						_modules[(unsigned __int64) info.lpBaseOfDll ] = new module( ph, hMods[i], info );
+						_modules[(unsigned __int64) info.lpBaseOfDll ] = new module( ph, handle, info );
 					}
 				}
 				else
@@ -41,6 +39,9 @@ module_list::module_list( DWORD pid )
 				}
 			}
 		}
+
+		else
+			PrintLastError(L"module_list EnumProcessModulesEx");
 
 		CloseHandle( ph );				
 	}

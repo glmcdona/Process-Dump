@@ -21,7 +21,7 @@ namespace
 			entry->AddressOfFunctions = 80;
 			entry->AddressOfNames = 84;
 			entry->AddressOfNameOrdinals = 88;
-			const DWORD rva = 0x180, name_offset = 248;
+			const DWORD rva = 0x78, name_offset = 248;
 			const WORD ordinal = 0;
 			memcpy(bytes.data() + 80, &rva, sizeof(rva));
 			memcpy(bytes.data() + 84, &name_offset, sizeof(name_offset));
@@ -47,16 +47,16 @@ namespace
 		export_list exports;
 		require(fixture.parse(exports, fixture.bytes.size()), "terminated export at image boundary rejected");
 		char library[] = "ordinary.dll", name[] = "Example";
-		require(exports.find_export(library, name, false) == export_fixture::image_base + 0x180,
+		require(exports.find_export(library, name, false) == export_fixture::image_base + 0x78,
 			"bounded export lookup changed");
-		export_entry entry = exports.find(export_fixture::image_base + 0x180);
+		export_entry entry = exports.find(export_fixture::image_base + 0x78);
 		require(strcmp(entry.library_name, library) == 0 && strcmp(entry.name, name) == 0,
 			"export strings were not copied exactly");
 
 		export_list missing_name_terminator;
 		require(!fixture.parse(missing_name_terminator, fixture.bytes.size() - 1),
 			"export name without an in-range terminator accepted");
-		require(!missing_name_terminator.contains(export_fixture::image_base + 0x180),
+		require(!missing_name_terminator.contains(export_fixture::image_base + 0x78),
 			"unterminated export name registered");
 
 		export_list missing_library_terminator;

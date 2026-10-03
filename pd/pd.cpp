@@ -13,6 +13,8 @@
 #include <thread>
 #include "pd.h"
 #include "close_watcher.h"
+#include "system_work.h"
+#include "version.h"
 
 #define NMD_ASSEMBLY_IMPLEMENTATION
 #include "nmd_assembly.h"
@@ -130,244 +132,29 @@ void add_process_hashes( DWORD pid, pe_hash_database* db, PD_OPTIONS* options )
 	db->add_hashes_eps( new_hashes_eps, new_hashes_ep_shorts);
 }
 
-void add_process_hashes_worker(Queue<PROCESSENTRY32>* work_queue, pe_hash_database* db, PD_OPTIONS* options)
-{
-	// Gather hashes from the work queue process list
-	while (!work_queue->empty())
-	{
-		// Process the hashes for this process
-		PROCESSENTRY32 entry;
-		if (work_queue->pop(entry))
-		{
-			add_process_hashes(entry.th32ProcessID, db, options);
-		}
-	}
-}
-
-
-
 void add_system_hashes( pe_hash_database* db, PD_OPTIONS* options )
 {
-	// Add clean hashes from all processes on the system right now
-
-	// Build a list of the hashes from all processes
-	options->ImportRec = false; // Force no import reconstruciton
-
-	// Build the queue of work from the currently running processes
-	Queue<PROCESSENTRY32> work_queue;
-	int total_work_count = 0;
-
-	PROCESSENTRY32 entry;
-	entry.dwSize = sizeof(PROCESSENTRY32);
-	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
-
-	if( snapshot != INVALID_HANDLE_VALUE )
-	{
-		if (Process32First(snapshot, &entry) == TRUE)
-		{
-			while (Process32Next(snapshot, &entry) == TRUE)
-			{
-				printf("...adding process to work queue: pid 0x%x,%S\n", entry.th32ProcessID, entry.szExeFile);
-				work_queue.push(entry);
-				total_work_count++;
-			}
-		}
-		CloseHandle(snapshot);
-	}
-
-	// Create threads processing the work queue
-	thread** threads = new thread*[options->NumberOfThreads];
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		threads[i] = new thread(add_process_hashes_worker, &work_queue, db, options);
-	}
-
-	// Wait for queue depletion
-	int count = 0;
-	bool still_working = false;
-	int running_count = 1;
-	while (!work_queue.empty() || running_count > 0)
-	{
-		// Check threads state
-		running_count = 0;
-		for (int i = 0; i < options->NumberOfThreads; i++)
-		{
-			if( WaitForSingleObject(threads[i]->native_handle(), 1) == WAIT_TIMEOUT )
-				running_count++;
-		}
-
-		if (count % 10 == 0)
-		{
-			// Print the status
-			int waiting_count = work_queue.count();
-			printf("Hash Queue -> Waiting: %i\tRunning: %i\tComplete: %i\n", waiting_count, running_count, total_work_count - (waiting_count + running_count));
-		}
-
-		// Wait
-		Sleep(50);
-		count++;
-	}
-
-	// Wait for thread completions
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		threads[i]->join(); // blocks until each thread is finished
-	}
-
-	// Cleanup
-	printf("...cleaning up system memory hashes factory\n");
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		delete threads[i];
-	}
-	delete []threads;
-}
-
-
-void dump_process_worker(Queue<PROCESSENTRY32>* work_queue, pe_hash_database* db, PD_OPTIONS* options)
-{
-	// Gather hashes from the work queue process list
-	unordered_set<unsigned __int64> new_hashes;
-	while (!work_queue->empty())
-	{
-		// Process the hashes for this process
-		PROCESSENTRY32 entry;
-		if (work_queue->pop(entry))
-		{
-			// Process this process
-
-			// Dump
-			dump_process* dumper = new dump_process(entry.th32ProcessID, db, options, true);
-			dumper->dump_all();
-
-			// Exclude these hashes from the next dumps
-			dumper->get_all_hashes(&new_hashes, NULL, NULL);
-			db->add_hashes(new_hashes);
-			new_hashes.clear();
-
-			delete dumper;
-		}
-	}
+	work_pool pool(options->NumberOfThreads);
+	system_work(pool, false, system_processes, [=](DWORD pid, work_pool& workers) {
+		unordered_set<unsigned __int64> hashes, full, prefixes;
+		dump_process dumper(pid, db, options, true);
+		dumper.get_all_hashes(&hashes, &full, &prefixes, &workers);
+		db->add_hashes(hashes);
+		db->add_hashes_eps(full, prefixes);
+	});
 }
 
 
 void dump_system(pe_hash_database* db, PD_OPTIONS* options)
 {
-	// Dump modules from all running processes
-	
-	// Build the queue of work from the currently running processes
-	Queue<PROCESSENTRY32> work_queue;
-	unordered_set<DWORD> dumping_pids;
-
-	PROCESSENTRY32 entry;
-	entry.dwSize = sizeof(PROCESSENTRY32);
-	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
-	int total_work_count = 0;
-
-	if (snapshot != INVALID_HANDLE_VALUE)
-	{
-		if (Process32First(snapshot, &entry) == TRUE)
-		{
-			while (Process32Next(snapshot, &entry) == TRUE)
-			{
-				printf("...adding process to work queue: pid 0x%x,%S\n", entry.th32ProcessID, entry.szExeFile);
-				work_queue.push(entry);
-				dumping_pids.insert(entry.th32ProcessID);
-				total_work_count++;
-			}
-		}
-		CloseHandle(snapshot);
-	}
-
-	// Create threads processing the work queue
-	thread** threads = new thread*[options->NumberOfThreads];
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		threads[i] = new thread(dump_process_worker, &work_queue, db, options);
-	}
-
-	// Wait for queue depletion
-	int count = 0;
-	bool still_working = false;
-	int running_count = 1;
-	bool added_new_processes = false;
-
-	while (!work_queue.empty() || running_count > 0 || !added_new_processes)
-	{
-		// Check threads state
-		running_count = 0;
-		for (int i = 0; i < options->NumberOfThreads; i++)
-		{
-			if (WaitForSingleObject(threads[i]->native_handle(), 1) == WAIT_TIMEOUT)
-				running_count++;
-		}
-
-		// Add any newly started processes at the very end
-		if (!added_new_processes && work_queue.empty() && running_count )
-		{
-			printf("...adding new processes since we started this job\n");
-			HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
-			if (snapshot != INVALID_HANDLE_VALUE)
-			{
-				if (Process32First(snapshot, &entry) == TRUE)
-				{
-					while (Process32Next(snapshot, &entry) == TRUE)
-					{
-						if (dumping_pids.count(entry.th32ProcessID) == 0)
-						{
-							printf("...adding new process to work queue: pid 0x%x,%S\n", entry.th32ProcessID, entry.szExeFile);
-							work_queue.push(entry);
-							dumping_pids.insert(entry.th32ProcessID);
-							total_work_count++;
-
-							// Add a new worker thread if needed
-							if (running_count < options->NumberOfThreads)
-							{
-								// Add a new worker thread
-								for (int i = 0; i < options->NumberOfThreads; i++)
-								{
-									if (WaitForSingleObject(threads[i]->native_handle(), 1) != WAIT_TIMEOUT)
-									{
-										threads[i]->join(); // blocks until each thread is finished
-										delete threads[i];
-										threads[i] = new thread(dump_process_worker, &work_queue, db, options);
-										break;
-									}
-								}
-							}
-						}
-					}
-				}
-				CloseHandle(snapshot);
-			}
-			added_new_processes = true;
-		}
-
-		if (count % 10 == 0)
-		{
-			// Print the status
-			int waiting_count = work_queue.count();
-			printf("Dump Queue -> Waiting: %i\tRunning: %i\tComplete: %i\n", waiting_count, running_count, total_work_count - (waiting_count + running_count));
-		}
-
-		// Wait
-		Sleep(50);
-		count++;
-	}
-
-	// Wait for thread completions
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		threads[i]->join(); // blocks until each thread is finished
-	}
-
-	// Cleanup
-	printf("...cleaning up system dump factory\n");
-	for (int i = 0; i < options->NumberOfThreads; i++)
-	{
-		delete threads[i];
-	}
-	delete []threads;
+	work_pool pool(options->NumberOfThreads);
+	system_work(pool, true, system_processes, [=](DWORD pid, work_pool& workers) {
+		dump_process dumper(pid, db, options, true);
+		dumper.dump_all(&workers);
+		unordered_set<unsigned __int64> hashes;
+		dumper.get_all_hashes(&hashes, NULL, NULL, &workers);
+		db->add_hashes(hashes);
+	});
 }
 
 
@@ -377,10 +164,8 @@ void dump_system(pe_hash_database* db, PD_OPTIONS* options)
 
 bool global_flag_verbose = false;
 
-int _tmain(int argc, _TCHAR* argv[])
+int _tmain(int argc, _TCHAR* argv[]) try
 {
-
-	get_privileges( GetCurrentProcess() );
 
 	// Process the flags	
 	WCHAR* filter = NULL;
@@ -445,6 +230,8 @@ int _tmain(int argc, _TCHAR* argv[])
 			flagRecursion = false;
 		else if( lstrcmp(argv[i],L"-ni") == 0 )
 			options.ImportRec = false;
+		else if (lstrcmp(argv[i], L"-reexec") == 0)
+			options.Reexecution = true;
 		else if( lstrcmp(argv[i],L"-nc") == 0 )
 			options.DumpChunks = false;
 		else if (lstrcmp(argv[i], L"-nep") == 0)
@@ -796,7 +583,7 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	if( flagHeader )
 	{
-		printf("Process Dump v2.2 (dev)\n");
+		printf("Process Dump v%s\n", PD_VERSION_STRING);
 		printf("  Copyright © 2017, Geoff McDonald\n");
 		printf("  http://www.split-code.com/\n");
 		printf("  https://github.com/glmcdona/Process-Dump\n\n");
@@ -804,47 +591,95 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	if( flagHelp )
 	{
-		// Print help page
-		printf("Process Dump (pd.exe) is a tool used to dump both 32 and 64 bit executable modules back to disk from memory within a process address space. This tool is able to find and dump hidden modules as well as loose executable code chunks, and it uses a clean hash database to exclude dumping of known clean files. This tool uses an aggressive import reconstruction approach that links all DWORD/QWORDs that point to an export in the process to the corresponding export function. Process dump can be used to dump all unknown code from memory ('-system' flag), dump specific processes, or run in a monitoring mode that dumps all processes just before they terminate.\n\n");
-		printf("Before first usage of this tool, when on the clean workstation the clean exclusing hash database can be generated by either:\n");
-		printf("\tpd -db gen\n");
-		printf("\tpd -db genquick\n\n");
-		printf("Example Usage:\n");
-		printf("\tpd -system\n");
-		printf("\tpd -pid 419\n");
-		printf("\tpd -pid 0x1a3\n");
-		printf("\tpd -pid 0x1a3 -a 0x401000 -o c:\\dump\\ -c c:\\dump\\test\\clean.db\n");
-		printf("\tpd -p chrome.exe\n");
-		printf("\tpd -p \"(?i).*chrome.*\"\n");
-		printf("\tpd -closemon\n\n");
+		fputs(R"help(Usage: pd.exe <command> [options]
 
-		printf("Options:\n");
-		printf("\t-system\t\tDumps all modules not matching the clean hash database\n\t\t\tfrom all accessible processes into the working\n\t\t\tdirectory.\n\n");
-		printf("\t-pid <pid>\tDumps all modules not matching the clean hash database\n\t\t\tfrom the specified pid into the current working\n\t\t\tdirectory. Use a '0x' prefix to specify a hex PID.\n\n");
-		printf("\t-closemon\t\tRuns in monitor mode. When any processes are terminating\n\t\t\tprocess dump will first dump the process.\n\n");
-		printf("\t-p <regex>\tDumps all modules not matching the clean hash database\n\t\t\tfrom the process name found to match the filter into\n\t\t\tspecified pid into the current working directory.\n\n");
-		printf("\t-g\t\tForces generation of PE headers from scratch, ignoring existing headers.\n\n");
-		printf("\t-o <path>\tSets the default output root folder for dumped components.\n\n");
-		//printf("\t-log\t\tRuns in log generation mode. No files are dumped, logfiles are generated for analysis. Specify a network path as the output and batch run to generate a report of multiple workstations.\n\n");
-		//printf("\t-netcollect\t\tRuns in network sample collection mode. Specify a network path as the output, dumped files will be organized by hash.\n\n");
-		printf("\t-v\t\tVerbose.\n\n");
-		printf("\t-nh\t\tNo header is printed in the output.\n\n");
-		printf("\t-nr\t\tDisable recursion on hash database directory add or\n\t\t\tremove commands.\n\n");
-		printf("\t-ni\t\tDisable import reconstruction.\n\n");
-		printf("\t-nc\t\tDisable dumping of loose code regions.\n\n");
-		printf("\t-nt\t\tDisable multithreading.\n\n");
-		printf("\t-nep\t\tDisable entry point hashing.\n\n");
-		printf("\t-eprec\t\tForce the entry point to be reconstructed, even if a valid one appears to exist.\n\n");
-		printf("\t-t <thread count>\t\tSets the number of threads to use (default 16).\n\n");
-		printf("\t-cdb <filepath>\t\tFull filepath to the clean hash database to use for this run.\n\n");
-		printf("\t-edb <filepath>\t\tFull filepath to the entrypoint hash database to use for this run.\n\n");
-		printf("\t-esdb <filepath>\t\tFull filepath to the entrypoint short hash database to use for this run.\n\n");
-		printf("\t-db gen\t\tAutomatically processes a few common folders as well as\n\t\t\tall the currently running processes and adds the found\n\t\t\tmodule hashes to the clean hash database. It will add\n\t\t\tall files recursively in: \n\t\t\t\t%%WINDIR%% \n\t\t\t\t%%HOMEPATH%% \n\t\t\t\tC:\\Program Files\\ \n\t\t\t\tC:\\Program Files (x86)\\ \n\t\t\tAs well as all modules in all running processes \n\n");
-		printf("\t-db genquick\tAdds the hashes from all modules in all processes to\n\t\t\tthe clean hash database. Run this on a clean system.\n\n");
-		printf("\t-db add <dir>\tAdds all the files in the specified directory\n\t\t\trecursively to the clean hash database. \n\n");
-		printf("\t-db rem <dir>\tRemoves all the files in the specified directory\n\t\t\trecursively from the clean hash database. \n\n");
-		printf("\t-db clean\tClears the clean hash database.\n\n");
-		printf("\t-db ignore\tIgnores the clean hash database when dumping a process\n\t\t\tthis time.  All modules will be dumped even if a match\n\t\t\tis found.\n\n");
+Reconstruct PE32/PE64 modules, hidden modules and loose executable chunks from
+process memory for analysis. Dumps are not guaranteed runnable or signed.
+Build a baseline database on a known-clean system before collecting unknown code.
+Use pd64.exe on 64-bit Windows, pd32.exe on 32-bit Windows; local builds use pd.exe.
+Administrator rights improve access but do not bypass protected processes.
+
+Commands (choose one; run database maintenance separately from dumping):
+  -system              Dump unknown modules/chunks from all accessible processes.
+                       Workers share module jobs, including the last process;
+                       one final scan checks for newly discovered PIDs.
+  -pid <pid>           Dump one process. PID may be decimal or 0x-prefixed hex.
+  -p <regex>           Match the entire process name, case-sensitive (ECMAScript).
+                       Quote the expression; multiple matches prompt for approval.
+  -closemon            Hook termination of accessible processes and dump before
+                       they exit. Intrusive; use only in a controlled environment.
+                       Press Ctrl+C to stop and clean up hooks.
+  -db gen              Add live hashes and PE files recursively from %WINDIR%,
+                       %USERPROFILE%, C:\Program Files, C:\Program Files (x86).
+  -db genquick         Add live module/chunk and entrypoint hashes only.
+  -db add <dir>        Add PE file hashes recursively from a directory.
+  -db remove <dir>     Remove matching clean-module hashes from a directory;
+  -db rem <dir>        alias of remove. Entrypoint signatures are retained.
+  -db clean            Clear and save ALL THREE databases, including entrypoints.
+
+Dump/reconstruction options:
+  -a <address>         Dump at a decimal or 0x-prefixed base address; requires -pid.
+                       Reuse a valid PE header; absent headers or -g generate
+                       both PE32 and PE64 analysis images. Clean filtering applies.
+  -o <path>            Output directory (default: current working directory).
+                       Use an existing ordinary directory you control. Existing
+                       files are never overwritten; reparse paths are rejected.
+  -g                   Force generated PE32 and PE64 headers instead of originals.
+  -ni                  Disable aggressive import reconstruction (default: on).
+  -nc                  Disable loose-code dumping/hashing (default: on).
+  -nep                 Disable entrypoint recovery and live entrypoint hashing.
+                       File database add/gen still collect entrypoint signatures.
+  -eprec               Force recovery even for an existing executable entrypoint.
+                       Default: preserve valid entrypoints. Full opcode matches
+                       are required; x64 runtime-function metadata is a fallback.
+                       No weak-prefix-only guesses; failure retains the old RVA.
+                       -nep takes precedence. Recovery remains heuristic.
+  -reexec              Experimental fresh-launch preparation (default: off).
+                       Reset the GS cookie and writable/non-executable zero-fill
+                       tails; restrict new imports to file-backed writable data
+                       outside delay-IAT sections. Assumes original section layout
+                       and discards captured state. Does not run the dump, restore
+                       a checkpoint, or disable ASLR/DEP/CFG.
+
+Database options:
+  -db ignore           Ignore ALL THREE loaded databases for this dump invocation,
+                       including entrypoint signatures; files are not cleared.
+                       In-run cross-process deduplication can still skip repeats.
+  -nr                  Disable recursion for -db add/remove/rem (not -db gen).
+  -cdb <filepath>      Clean-module database (alias: -c <filepath>).
+  -edb <filepath>      Full entrypoint-opcode database.
+  -esdb <filepath>     Short entrypoint-prefix database.
+                       Defaults beside pd.exe: clean.hashes, entrypoints.hashes,
+                       shortentrypoints.hashes. Maintenance updates these files.
+                       Hash matches are exclusions, not a trust verdict.
+
+Workers and display:
+  -t <count>           Worker count, at least 1 (default: 16). Applies to -system,
+                       live/file database generation and close-monitor workers.
+                       Direct -pid/-p dumps remain synchronous.
+  -nt                  Use one worker (same as -t 1). Last -t/-nt wins.
+                       Close monitoring still has a separate monitoring thread.
+  -v                   Verbose diagnostics (default: off).
+  -nh                  Suppress the version/copyright banner, not other output.
+  --help               Print help and exit; aliases: -help, -h, --h.
+                       No arguments also prints help.
+
+Examples (create the output directory first):
+  pd.exe -db genquick -t 4
+  pd.exe -system -t 4 -o C:\dumps
+  pd.exe -pid 419
+  pd.exe -pid 0x1a3 -a 0x401000 -o C:\dumps -c C:\baseline\clean.hashes
+  pd.exe -p "chrome[.]exe"
+  pd.exe -p ".*chrome.*" -ni -nc
+  pd.exe -pid 419 -reexec -o C:\dumps
+  pd.exe -db add C:\baseline -nr -t 4
+  pd.exe -closemon -o C:\dumps
+
+Images/reconstructions above 256 MiB are rejected. Captures are live, non-atomic,
+and may contain sensitive data; keep output private. See README.md for benchmark
+commands, recovery accuracy, reexecution caveats and output safety details.
+)help", stdout);
+		return 0;
 	}
 	
 	// Sanity check on flags
@@ -902,7 +737,7 @@ int _tmain(int argc, _TCHAR* argv[])
 			printf("Adding all files in folder '%s' to clean hash and entrypoint database...\n", add_directory);
 
 		int count_before = db->count();
-		db->add_folder(add_directory, L"*", flagRecursion);
+		db->add_folder(add_directory, L"*", flagRecursion, options.NumberOfThreads);
 		printf("Added %i new hashes to the database. It now has %i hashes.\n", db->count() - count_before, db->count());
 		db->save();
 	}else if( flagDB_remove )
@@ -931,25 +766,25 @@ int _tmain(int argc, _TCHAR* argv[])
 		// Add a bunch of folders to the database
 		count_before = db->count();
 		printf("Adding files in %%WINDIR%% to clean hash database...\n");
-		db->add_folder("%WINDIR%", L"*", true);
+		db->add_folder("%WINDIR%", L"*", true, options.NumberOfThreads);
 		printf("...added %i new hashes from %%WINDIR%%.\n", db->count() - count_before);
 		db->save();
 
 		count_before = db->count();
 		printf("Adding files in %%USERPROFILE%% to clean hash database...\n");
-		db->add_folder("%USERPROFILE%", L"*", true);
+		db->add_folder("%USERPROFILE%", L"*", true, options.NumberOfThreads);
 		printf("...added %i new hashes from %%USERPROFILE%%.\n", db->count() - count_before);
 		db->save();
 
 		count_before = db->count();
 		printf("Adding files in 'C:\\Program Files\\' to clean hash database...\n");
-		db->add_folder("C:\\Program Files\\", L"*", true);
+		db->add_folder("C:\\Program Files\\", L"*", true, options.NumberOfThreads);
 		printf("...added %i new hashes from 'C:\\Program Files\\'.\n", db->count() - count_before);
 		db->save();
 
 		count_before = db->count();
 		printf("Adding files in C:\\Program Files (x86)\\ to clean hash database...\n");
-		db->add_folder("C:\\Program Files (x86)\\", L"*", true);
+		db->add_folder("C:\\Program Files (x86)\\", L"*", true, options.NumberOfThreads);
 		printf("...added %i new hashes from 'C:\\Program Files (x86)\\'.\n", db->count() - count_before);
 		db->save();
 
@@ -1083,5 +918,8 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	return 0;
 }
-
-
+catch (const std::exception& error)
+{
+	fprintf(stderr, "ERROR: Process Dump failed: %s.\n", error.what());
+	return 1;
+}
