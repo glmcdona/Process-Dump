@@ -295,6 +295,7 @@
     </ClInclude>
     <ClInclude Include="pe_imports.h" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="version.h" />
     <ClInclude Include="simple.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="stream_wrapper.h">

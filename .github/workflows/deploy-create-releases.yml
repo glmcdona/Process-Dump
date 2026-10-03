@@ -9,7 +9,7 @@ on:
         required: true
       version:
         type: string
-        description: Release version (for example v2.2)
+        description: Release version (for example v3.0.0)
         required: true
 
 permissions:

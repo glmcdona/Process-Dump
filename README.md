@@ -1,14 +1,19 @@
-# Process Dump
+# Process Dump 3.0.0
+
+The source version is **3.0.0** (Windows file/product version **3.0.0.0**). The console banner and executable resources share `pd\version.h`. See the [3.0.0 changes](#version-300-unreleased) and [command-line reference](#command-line-arguments). This source version does not imply that a tagged release has been published.
+
 Process Dump is a Windows reverse-engineering command-line tool to dump malware memory components back to disk for analysis. Often malware files are packed and obfuscated before they are executed in order to avoid AV scanners, however when these files are executed they will often unpack or inject a clean version of the malware code in memory. A common task for malware researchers when analyzing malware is to dump this unpacked code back from memory to disk for scanning with AV products or for analysis with static analysis tools such as IDA.
 
-Process Dump works for Windows 32 and 64 bit operating systems and can dump memory components from specific processes or from all processes currently running. Process Dump supports creation and use of a clean-hash database, so that dumping of all the clean files such as kernel32.dll can be skipped. It's main features include:
+Process Dump works for Windows 32 and 64 bit operating systems and can dump memory components from specific processes or from all processes currently running. Process Dump supports creation and use of a clean-hash database, so that dumping of known modules such as kernel32.dll can be skipped. A hash match is an exclusion, not a trust verdict. Its main features include:
 * Dumps code from a specific process or all processes.
 * Finds and dumps hidden modules that are not properly loaded in processes.
 * Finds and dumps loose code chunks even if they aren't associated with a PE file. It builds a PE header and import table for the chunks.
 * Reconstructs imports using an aggressive approach.
 * Can run in close dump monitor mode ('-closemon'), where processes will be paused and dumped just before they terminate.
-* Multi-threaded, so when you are dumping all running processes it will go pretty quickly.
-* Can generate a clean hash database. Generate this before a machine is infected with malware so Process Dump will only dump the new malicious malware components.
+* Shares persistent workers across modules for system dumping and live hashing; directory database generation also hashes files concurrently.
+* Recovers missing/invalid entrypoints using full opcode signatures and a conservative x64 runtime-function fallback.
+* Offers opt-in `-reexec` preparation for fresh-launch experiments, separate from normal forensic capture.
+* Can generate clean-module and entrypoint databases. Generate a baseline on a known-clean system to reduce repeated output; unknown code is not necessarily malicious.
 
 I'm maintaining an official compiled release on my website here:
   https://split-code.com/processdump.html
@@ -33,7 +38,7 @@ The `--baseline` selector runs the compatibility suite. Non-reconstructed PE dum
 
 CI builds and runs tests for all four Debug/Release and Win32/x64 combinations on Windows. Development, tagged, and manually selected-commit releases reuse this tested build; release publication is separate from read-only PR builds. Compiler stack checks, Control Flow Guard, ASLR, and DEP are explicitly enabled.
 
-Release jobs use SHA-pinned actions and a preparation script from the workflow's own commit, never the manually selected build commit. Artifacts are read only from the current run, with exactly one ordinary `pd.exe` entry per architecture and 64 MiB archive/binary limits. The publisher validates ZIP metadata and CRC, then copies bytes to fixed, exclusively created filenames; it never extracts archive paths or executes downloaded binaries. Signed download redirects do not receive the repository token. Run `python -m unittest discover -s tests -p "test_*.py"` for the portable benchmark and release-preparation tests.
+Release jobs use SHA-pinned actions and a preparation script from the workflow's own commit, never the manually selected build commit. Artifacts are read only from the current run, with exactly one ordinary `pd.exe` entry per architecture and 64 MiB archive/binary limits. The publisher validates ZIP metadata and CRC, then copies bytes to fixed, exclusively created filenames; it never extracts archive paths or executes downloaded binaries. Signed download redirects do not receive the repository token. Run `python -m unittest discover -s tests -p "test_*.py"` for the portable benchmark, documentation and release-preparation tests. To also check the built application's help, no-side-effect help exit and Windows version metadata, set `$env:PD_TEST_EXE = (Resolve-Path .\x64\Release\pd.exe).Path` before running that command. CI sets this for each build configuration; CLI checks use a private copy and never dump or hook processes.
 
 Release assets include `provenance.json` with source commit, run/artifact IDs, sizes, and SHA-256 hashes. Existing version tags must identify the tested commit. Publication is serialized per release; superseded automatic main builds do not replace development assets. Manual development dispatch still deliberately permits a maintainer-selected branch. `Develop` remains a rolling asset set with a historical, unmoved tag: use the manifest, not that tag, to identify its binaries. Multi-asset uploads are not transactional; a failed upload can leave a partial set, so verify both binary hashes against the manifest. Selecting a commit authorizes publication of its bytes, not execution of its build code in the write-enabled publisher.
 
@@ -153,82 +158,78 @@ Close monitoring uses a private release event rather than accepting a target-sup
 `pd_tests.exe --security` runs bounded validation and mock-based lifecycle tests; the tests contain no exploit PoCs and do not hook other processes.
 
 # Command-line arguments
-Process dump can be used to dump all unknown code from memory ('-system' flag), dump specific processes, or run in a monitoring mode that dumps all processes just before they terminate.
+Use `pd.exe <command> [options]`. Local builds are named `pd.exe`; release assets are `pd64.exe` and `pd32.exe`. Prefer the 64-bit build on 64-bit Windows to access both architectures. Administrator rights improve coverage but do not bypass protected processes.
 
-Before first usage of this tool, when on the clean workstation the clean excluding hash database can be generated by either:
-* pd -db genquick
-* pd -db gen
+Choose one dump or database-maintenance command per invocation; generate the baseline and dump in **separate commands**. `-db ignore` is a modifier that can accompany dumping. Flags are case-sensitive. No arguments, `--help`, `-help`, `-h` or `--h` print help and exit without running a dump or database command.
 
-Example Usage:
-* pd -system
-* pd -pid 419
-* pd -pid 0x1a3
-* pd -pid 0x1a3 -a 0x401000 -o c:\dump\ -c c:\dump\test\clean.db
-* pd -p chrome.exe
-* pd -p "(?i).\*chrome.\*"
-* pd -closemon
+Defaults: aggressive import reconstruction, loose-code discovery, and entrypoint recovery are enabled; `-reexec`, generated headers and verbose output are disabled. Dumps go to the current working directory; database files live beside the executable. The default worker count is 16.
 
-The command-line arguments can be grouped as follows:
-
-**General Dumping Options**
+**Dump commands and output**
 
 | Option | Description |
 |--------|-------------|
-| -system | Dumps all modules not matching the clean hash database from all accessible processes into the working directory. |
-| -pid \<pid\> | Dumps all modules not matching the clean hash database from the specified PID into the current working directory. Use a '0x' prefix to specify a hex PID. |
-| -closemon | Runs in monitor mode. When any processes are terminating, process dump will first dump the process. |
-| -p \<regex process name\> | Dumps all modules not matching the clean hash database from the process name found to match the filter into specified PID into the current working directory. |
-| -a \<module base address\> | Dumps a module at the specified base address from the process. |
-| -o \<path\> | Sets the default output root folder for dumped components. |
+| `-system` | Dump unknown modules, hidden modules and eligible loose chunks from all accessible processes. Workers share module jobs, including the last process; one final scan discovers new PIDs after initial work drains. |
+| `-pid <pid>` | Dump one process. Use decimal or a `0x`-prefixed hexadecimal PID. |
+| `-p <regex>` | Match the **entire** process name using a case-sensitive ECMAScript regular expression. Quote the expression; use `.*` for a substring match. Multiple matches prompt for approval. Inline `(?i)` is not supported; use explicit character classes when needed. |
+| `-closemon` | Hook termination of accessible processes and dump them before exit. This modifies target processes; use only in a controlled environment. Press Ctrl+C to stop and clean up hooks. It cannot guarantee capture of every termination path or protected process. |
+| `-a <address>` | Dump at a decimal or `0x`-prefixed base address; **requires `-pid`**. Reuse a valid PE header. If absent, or with `-g`, generate both PE32 and PE64 analysis images. Clean filtering still applies. |
+| `-o <path>` | Output directory, defaulting to the current working directory. Create an ordinary directory you control first. Existing files are never overwritten and reparse paths are rejected; use fresh directories for repeat captures. |
 
-**Clean Hash Database Options**
+**Database commands and paths**
 
-| Option | Description |
-|--------|-------------|
-| -db gen | Automatically processes a few common folders as well as all the currently running processes and adds the found module hashes to the clean hash database. It will add all files recursively in: `%WINDIR%`, `%HOMEPATH%`, `C:\Program Files\`, `C:\Program Files (x86)\`, as well as all modules in all running processes. These clean hashes will be added to the file `clean.hashes` in the application directory. During future process dumping commands, these known modules will not be dumped. It is recommended to run this command one time on a clean system prior to using the tool that way not too many modules will be dumped from memory.|
-| -db genquick | Same as above, but only adds the hashes from all modules in all processes to the clean hash database. This is a much faster way to build the clean hash database, but it will be less complete. |
-| -db add \<dir\> | Adds all the files in the specified directory recursively to the clean hash database. |
-| -db rem \<dir\> | Removes all the files in the specified directory recursively from the clean hash database. |
-| -nr | Disable recursion on hash database directory add or remove commands. |
-| -db clean | Clears the clean hash database. |
-| -db ignore | Ignores the clean hash database when dumping a process this time. All modules will be dumped even if a match is found. |
-| -cdb \<filepath\> | Full filepath to the clean hash database to use for this run if you'd like to override the default of `clean.hashes`. |
-| -edb \<filepath\> | Full filepath to the entrypoint hash database to use for this run. |
-| -esdb \<filepath\> | Full filepath to the entrypoint short hash database to use for this run. |
-
-**Output Options**
+There are three databases: clean-module hashes (`clean.hashes`), full entrypoint-opcode hashes (`entrypoints.hashes`), and short entrypoint-prefix hashes (`shortentrypoints.hashes`). Defaults are beside the executable, not in the working/output directory. Maintenance commands save to these paths; use all three path overrides for an isolated baseline. Generation/addition extends existing sets rather than replacing them. Generate only on a known-clean system; skipped matches do not prove that all remaining code is malicious.
 
 | Option | Description |
 |--------|-------------|
-| -v | Verbose mode where more details will be printed for debugging. |
-| -nh | No header is printed in the output. |
+| `-db gen` | Add live module/chunk and entrypoint hashes, then recursively scan PE files in `%WINDIR%`, `%USERPROFILE%`, `C:\Program Files` and `C:\Program Files (x86)`. Uses `-t` for live and file work. `-nr` does not change this full recursive scan. |
+| `-db genquick` | Add live module/chunk and entrypoint hashes only, without scanning disk folders. Uses the shared module pool; `-nc` excludes loose chunks. Faster but less complete than `gen`. |
+| `-db add <dir>` | Add PE file hashes from a directory to all three databases, recursively by default. Uses `-t`; reparse directories are excluded. |
+| `-db remove <dir>`, `-db rem <dir>` | Remove matching **clean-module** hashes for PE files in the directory, recursively by default. Does not remove entrypoint signatures. Removal remains serial. |
+| `-nr` | Disable recursion for `-db add`, `-db remove` and `-db rem` only. |
+| `-db clean` | Clear and save **all three databases**, including both entrypoint sets. |
+| `-db ignore` | Ignore **all three loaded sets** in memory for this dump invocation, including entrypoint signatures; does not clear database files. In-run cross-process deduplication can still skip repeated modules. |
+| `-cdb <filepath>`, `-c <filepath>` | Override the clean-module database path. |
+| `-edb <filepath>` | Override the full entrypoint-opcode database path. |
+| `-esdb <filepath>` | Override the short entrypoint-prefix database path. |
 
-**Advanced Options**
+**Reconstruction and workers**
 
 | Option | Description |
 |--------|-------------|
-| -g | Forces generation of PE headers from scratch, ignoring existing headers. |
-| -eprec | Force the entry point to be reconstructed, even if a valid one appears to exist. |
-| -ni | Disable import reconstruction. |
-| -reexec | Experimental fresh-launch preparation: reset the GS cookie and writable zero-fill data, and restrict new speculative imports. Discards captured state; does not run the dump. |
-| -nc | Disable dumping of loose code regions. |
-| -nt | Disable multithreading. |
-| -nep | Disable entry point hashing. |
-| -t \<thread count\> | Sets the number of threads to use (default 16). |
+| `-g` | Force generated PE32 and PE64 analysis headers instead of existing headers. Both architectures are emitted because raw code does not reliably identify its architecture. |
+| `-ni` | Disable aggressive import reconstruction (enabled by default). |
+| `-nc` | Disable loose-code dumping and hashing (enabled by default). Loaded and hidden PE modules are still scanned. |
+| `-nep` | Disable entrypoint recovery and live entrypoint-signature collection; takes precedence over `-eprec`. File database add/gen still collect entrypoint signatures using their own parsing options. |
+| `-eprec` | Force entrypoint recovery even when a valid executable entrypoint exists. Normally valid entrypoints are preserved. Requires full opcode matches; x64 runtime-function metadata provides a fallback. Weak prefixes alone are not accepted, and failure retains the previous RVA with a warning. Recovery is heuristic, not guaranteed. |
+| `-reexec` | Experimental fresh-launch preparation, off by default. Reset the GS-cookie bootstrap value and writable/non-executable zero-fill tails; restrict new imports to file-backed writable data outside delay-IAT sections. Assumes original section layout and **discards captured state**. Does not execute dumps, restore a process checkpoint or disable ASLR/DEP/CFG. See [re-execution caveats](#experimental-re-execution). |
+| `-t <count>` | Set worker count to at least 1 (default 16; decimal or `0x`-prefixed hex). Applies to system dumping, live/file database generation and close-monitor dump workers. Direct `-pid`/`-p` dumps remain synchronous. More workers can increase memory use and are not always faster. |
+| `-nt` | Use one worker, equivalent to `-t 1`; the last `-t`/`-nt` wins. Close monitoring still has a separate monitoring thread. |
+
+**Help and diagnostics**
+
+| Option | Description |
+|--------|-------------|
+| `--help`, `-help`, `-h`, `--h` | Print help and exit. No arguments also prints help. |
+| `-v` | Enable verbose diagnostics (off by default). |
+| `-nh` | Suppress the version/copyright banner, not other output; help text still prints. |
+
+Images and reconstructions above 256 MiB are rejected. Captures are live and non-atomic, can contain sensitive data, and are not guaranteed runnable or signed copies. Keep output private and review the [input/output safety notes](#handling-untrusted-input).
 
 # Usage Examples
 
 | Command | Description |
 | ------- | ----------- |
-| `pd64.exe -db genquick` | Quickly build clean module database based on currently running processes. Process Dump in later tasks will only dump unrecognized modules. |
-| `pd64.exe -system` | Dump all modules and hidden chunks from all processes while ignoring clean modules. |
-| `pd64.exe -closemon` | Run in terminate monitor mode. This will dump all processes when they attempt to terminate. |
-| `pd64.exe -pid 0x18A` | Dump modules and hidden chunks from a specific process ID. |
-| `pd64.exe -p .\*chrome.\*` | Dump modules and hidden chunks by process name. |
-| `pd64.exe -db gen` | Build a clean-hash database of known modules. This is used to avoid dumping known good modules in later tasks. |
-| `pd64.exe -pid 0x1a3 -a 0xffb4000` | Dump code from a specific address in PID. This will generate two files for analysis, with reconstructed 32bit and 64bit PE headers: `notepad_exe_x64_hidden_FFB40000.exe` and `notepad_exe_x86_hidden_FFB40000.exe`. |
-
-Sure, here's a more streamlined version of the information:
+| `pd64.exe -db genquick -t 4` | Build a live baseline on a known-clean system. Run separately from dumping. |
+| `pd64.exe -system -t 4 -o C:\dumps` | Dump unknown modules/chunks across accessible processes into a pre-created output directory. |
+| `pd64.exe -closemon -o C:\dumps` | Monitor hooked termination paths in a controlled environment; Ctrl+C stops monitoring. |
+| `pd64.exe -pid 0x18A` | Dump modules and eligible loose chunks from one process. |
+| `pd64.exe -p ".*chrome.*" -ni -nc` | Match process names containing lowercase `chrome`, without aggressive imports or loose chunks. |
+| `pd64.exe -p "chrome[.]exe"` | Match exactly `chrome.exe`. |
+| `pd64.exe -db gen` | Extend the live and disk baseline using the documented folders. |
+| `pd64.exe -db add C:\baseline -nr -t 4` | Add PE files in just this directory with four workers. |
+| `pd64.exe -pid 0x1a3 -a 0x401000 -o C:\dumps` | Dump at a chosen base address. Generates both architectures only when a header is absent or `-g` is supplied. |
+| `pd64.exe -pid 419 -reexec -o C:\dumps` | Prepare dumps for fresh-launch experiments; does not launch them. |
+| `pd64.exe -pid 419 -eprec -cdb C:\baseline\clean.hashes -edb C:\baseline\entrypoints.hashes -esdb C:\baseline\shortentrypoints.hashes` | Force recovery using an isolated set of database paths. |
 
 ## Sandbox Usage
 
@@ -236,16 +237,16 @@ When using Process Dump in an automated sandbox or for manual anti-malware resea
 
 - **Build the Clean Hash Database:** Run `pd64.exe -db gen` or for a faster less complete process, use `pd64.exe -db genquick`. Depending on your situation, you may want to snapshot your VM after creating this clean hash database that way it doesn't need to be repeated each time.
 
-- **Start the Process Dump Terminate Monitor:** Keep `pd64.exe -closemon` running in the background. It will dump all intermediate processes used by the malware.
+- **Start the Process Dump Terminate Monitor:** Keep `pd64.exe -closemon` running in the background. It attempts to capture accessible processes using hooked termination paths; capture of every intermediate process is not guaranteed.
 
-- **Execute the Malware File:** Monitor the malware installation. `pd64.exe` will automatically dump any process that tries to close.
+- **Observe the Sample in an Isolated Lab:** Monitor the sample's behavior while `pd64.exe` captures hooked processes that terminate. Never use close monitoring as a containment or safety mechanism.
 
 - **Dump the Running Malware from Memory:** When ready, use `pd64.exe -system` to dump all processes.
 
 The dumped components will be found in the working directory of `pd64.exe`. To change the output path, use the `-o` flag.
 
 # Notes on the naming convention of dumped modules:
-* 'hiddemodule' in the filename instead of the module name indicates the module was not properly registered in the process.
+* 'hiddenmodule' in the filename instead of the module name indicates the module was not properly registered in the process.
 * 'codechunk' in the filename means that it is a reconstructed dump from a loose executable region. This can be for example injected code that did not have a PE header. Codechunks will be dumped twice, once with a reconstructed x86 and again with a reconstructed x64 header.
 
 Example filenames of dumped files
@@ -256,6 +257,15 @@ Example filenames of dumped files
 
 
 # Version history
+
+## Version 3.0.0 (unreleased)
+* Hardened untrusted PE parsing, reconstruction bounds, output naming/creation, close-monitor cleanup and release artifact handling.
+* Improved sparse section packing and content fidelity, PE32/PE64 imports and exports, raw-address reconstruction, and handling of extended/malformed headers. Intentional per-location IAT fixups are preserved.
+* Added persistent module-level system scheduling, parallel live/file database hashing and lower-allocation reconstruction, with repeatable output-equivalence benchmarks.
+* Improved entrypoint selection: preserve valid executable entrypoints, reject weak-only guesses, and use validated x64 runtime-function metadata as a fallback. Accuracy and remaining false recoveries are documented above.
+* Added opt-in `-reexec` preparation and a controlled execution-progress benchmark; ordinary forensic dumps continue to preserve captured state.
+* Added native regression tests, portable benchmark/release/CLI checks and Win32/x64 Debug/Release CI with modern Visual Studio toolsets.
+* Unified the 3.0.0 banner and Windows version resources, refreshed all CLI flags/defaults/aliases, and made help exit without running a requested dump or database command.
 
 ## Version 2.1 (February 12th, 2017)
 * Fixed a bug where the last section in some cases would instead be filled with zeros. Thanks to megastupidmonkey for reporting this issue.

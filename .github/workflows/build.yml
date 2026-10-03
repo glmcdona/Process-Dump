@@ -33,7 +33,9 @@ jobs:
         run: |
           & ".\${{ matrix.platform }}\${{ matrix.configuration }}\pd_tests.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Test benchmark analysis and release artifact handling
+      - name: Test CLI documentation, benchmark analysis and release artifact handling
+        env:
+          PD_TEST_EXE: .\${{ matrix.platform }}\${{ matrix.configuration }}\pd.exe
         run: python -m unittest discover -s tests -p "test_*.py"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: matrix.configuration == 'Release'
