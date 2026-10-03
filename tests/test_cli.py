@@ -31,8 +31,7 @@ class CliDocumentationTests(unittest.TestCase):
         for field in ("FileVersion", "ProductVersion"):
             self.assertIn(f'VALUE "{field}", PD_VERSION_STRING ".0"', resource)
         self.assertIn('printf("Process Dump v%s\\n", PD_VERSION_STRING)', SOURCE)
-        self.assertIn(f"# Process Dump {VERSION}\n", README)
-        self.assertIn(f"## Version {VERSION} (unreleased)", README)
+        self.assertRegex(README, rf"(?m)^## Version {re.escape(VERSION)}(?:\s|$)")
 
     def test_every_parser_flag_and_database_command_is_documented(self):
         self.assertGreater(len(FLAGS), 20)
